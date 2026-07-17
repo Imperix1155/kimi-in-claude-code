@@ -6,7 +6,7 @@
 
 ## Epic 0 — Project setup (small)
 
-- [ ] **KMP-1** Init git repo in this folder (or a `kimi-plugin/` subfolder); fork/copy codex plugin skeleton; preserve Apache-2.0 LICENSE + NOTICE. _(PLAN §3, §6)_
+- [ ] **KMP-1** ~~Init git repo~~ ✅ 2026-07-16 (public: github.com/Imperix1155/kimi-in-claude-code, Apache-2.0 + NOTICE, docs + spike committed). **Remaining:** fork/copy codex plugin skeleton into the repo. _(PLAN §3, §6)_
 - [ ] **KMP-2** Rename pass: plugin.json manifest, `CODEX_COMPANION_*` → `KIMI_COMPANION_*` env vars, Bucket-1 verbatim copies in place. _(PLAN §4)_
 
 ## Epic 1 — Engine core (= milestone M2, the big one)
