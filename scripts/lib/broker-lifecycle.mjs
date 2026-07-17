@@ -6,13 +6,14 @@ import process from "node:process";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createBrokerEndpoint, parseBrokerEndpoint } from "./broker-endpoint.mjs";
+import { terminateProcessTree } from "./process.mjs";
 import { resolveStateDir } from "./state.mjs";
 
-export const PID_FILE_ENV = "KIMI_COMPANION_APP_SERVER_PID_FILE";
-export const LOG_FILE_ENV = "KIMI_COMPANION_APP_SERVER_LOG_FILE";
+export const PID_FILE_ENV = "KIMI_COMPANION_BROKER_PID_FILE";
+export const LOG_FILE_ENV = "KIMI_COMPANION_BROKER_LOG_FILE";
 const BROKER_STATE_FILE = "broker.json";
 
-export function createBrokerSessionDir(prefix = "cxc-") {
+export function createBrokerSessionDir(prefix = "kmc-") {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
 }
 
@@ -56,14 +57,18 @@ export async function sendBrokerShutdown(endpoint) {
   });
 }
 
-export function spawnBrokerProcess({ scriptPath, cwd, endpoint, pidFile, logFile, env = process.env }) {
+export function spawnBrokerProcess({ scriptPath, cwd, endpoint, pidFile, logFile, extraArgs = [], env = process.env }) {
   const logFd = fs.openSync(logFile, "a");
-  const child = spawn(process.execPath, [scriptPath, "serve", "--endpoint", endpoint, "--cwd", cwd, "--pid-file", pidFile], {
-    cwd,
-    env,
-    detached: true,
-    stdio: ["ignore", logFd, logFd]
-  });
+  const child = spawn(
+    process.execPath,
+    [scriptPath, "serve", "--endpoint", endpoint, "--cwd", cwd, "--pid-file", pidFile, ...extraArgs],
+    {
+      cwd,
+      env,
+      detached: true,
+      stdio: ["ignore", logFd, logFd]
+    }
+  );
   child.unref();
   fs.closeSync(logFd);
   return child;
@@ -110,7 +115,70 @@ async function isBrokerEndpointReady(endpoint) {
   }
 }
 
+function brokerLockDir(cwd) {
+  return path.join(resolveStateDir(cwd), "broker.lock");
+}
+
+// mkdir is atomic across processes, so it serializes concurrent broker
+// starts for one workspace. A crashed holder's stale lock is stolen after
+// 15s (its mtime stops advancing).
+function tryAcquireBrokerLock(cwd) {
+  const lockDir = brokerLockDir(cwd);
+  fs.mkdirSync(path.dirname(lockDir), { recursive: true });
+  try {
+    fs.mkdirSync(lockDir);
+    return true;
+  } catch (error) {
+    if (error?.code !== "EEXIST") {
+      throw error;
+    }
+    try {
+      const stat = fs.statSync(lockDir);
+      if (Date.now() - stat.mtimeMs > 15_000) {
+        fs.rmdirSync(lockDir);
+        fs.mkdirSync(lockDir);
+        return true;
+      }
+    } catch {}
+    return false;
+  }
+}
+
+function releaseBrokerLock(cwd) {
+  try {
+    fs.rmdirSync(brokerLockDir(cwd));
+  } catch {}
+}
+
 export async function ensureBrokerSession(cwd, options = {}) {
+  // The broker was spawned detached (its own process group), so the group
+  // kill takes its agent child down with it.
+  const killImpl = options.killProcess ?? ((pid) => terminateProcessTree(pid));
+  // Non-holders wait long enough for the holder's spawn to finish.
+  const deadline = Date.now() + (options.timeoutMs ?? 2000) + 3000;
+
+  for (;;) {
+    const existing = loadBrokerSession(cwd);
+    if (existing && (await isBrokerEndpointReady(existing.endpoint))) {
+      return existing;
+    }
+    if (tryAcquireBrokerLock(cwd)) {
+      try {
+        return await startBrokerSessionLocked(cwd, options, killImpl);
+      } finally {
+        releaseBrokerLock(cwd);
+      }
+    }
+    if (Date.now() > deadline) {
+      return null;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+}
+
+async function startBrokerSessionLocked(cwd, options, killImpl) {
+  // Re-check under the lock: the previous holder may have started a broker
+  // while we were waiting to acquire.
   const existing = loadBrokerSession(cwd);
   if (existing && (await isBrokerEndpointReady(existing.endpoint))) {
     return existing;
@@ -123,7 +191,7 @@ export async function ensureBrokerSession(cwd, options = {}) {
       logFile: existing.logFile ?? null,
       sessionDir: existing.sessionDir ?? null,
       pid: existing.pid ?? null,
-      killProcess: options.killProcess ?? null
+      killProcess: killImpl
     });
     clearBrokerSession(cwd);
   }
@@ -135,7 +203,7 @@ export async function ensureBrokerSession(cwd, options = {}) {
   const logFile = path.join(sessionDir, "broker.log");
   const scriptPath =
     options.scriptPath ??
-    fileURLToPath(new URL("../app-server-broker.mjs", import.meta.url));
+    fileURLToPath(new URL("../acp-broker.mjs", import.meta.url));
 
   const child = spawnBrokerProcess({
     scriptPath,
@@ -143,18 +211,21 @@ export async function ensureBrokerSession(cwd, options = {}) {
     endpoint,
     pidFile,
     logFile,
+    extraArgs: options.extraBrokerArgs ?? [],
     env: options.env ?? process.env
   });
 
   const ready = await waitForBrokerEndpoint(endpoint, options.timeoutMs ?? 2000);
   if (!ready) {
+    // A broker that never came up (e.g. its agent hung during initialize)
+    // must not linger detached and untracked.
     teardownBrokerSession({
       endpoint,
       pidFile,
       logFile,
       sessionDir,
       pid: child.pid ?? null,
-      killProcess: options.killProcess ?? null
+      killProcess: killImpl
     });
     return null;
   }

@@ -9,6 +9,7 @@ const scenario = process.argv[2] ?? "basic";
 const rl = readline.createInterface({ input: process.stdin });
 let nextAgentRequestId = 1000;
 let sessionCount = 0;
+let promptCount = 0;
 let heldPromptId = null;
 const waiters = new Map();
 const observed = {};
@@ -40,9 +41,23 @@ rl.on("line", (line) => {
     return;
   }
 
+  // Client->agent notification: session/cancel resolves a held turn.
+  if (message.id === undefined && message.method === "session/cancel") {
+    if (scenario === "cancellable" && heldPromptId !== null) {
+      const promptId = heldPromptId;
+      heldPromptId = null;
+      send({ id: promptId, result: { stopReason: "cancelled" } });
+    }
+    return;
+  }
+
   if (message.method === "initialize") {
     if (scenario === "init-error") {
       send({ id: message.id, error: { code: -32602, message: "unsupported protocol version" } });
+      return;
+    }
+    if (scenario === "hang-init") {
+      // Never answer: exercises the broker-startup-timeout teardown path.
       return;
     }
     send({ id: message.id, result: { protocolVersion: 1 } });
@@ -95,6 +110,22 @@ rl.on("line", (line) => {
 
     if (scenario === "refusal") {
       send({ id: message.id, result: { stopReason: "refusal" } });
+      return;
+    }
+
+    if (scenario === "slow-prompt") {
+      setTimeout(() => send({ id: message.id, result: { stopReason: "end_turn" } }), 500);
+      return;
+    }
+
+    if (scenario === "counter") {
+      promptCount += 1;
+      send({ id: message.id, result: { stopReason: "end_turn", promptCount, agentPid: process.pid } });
+      return;
+    }
+
+    if (scenario === "cancellable") {
+      heldPromptId = message.id;
       return;
     }
 

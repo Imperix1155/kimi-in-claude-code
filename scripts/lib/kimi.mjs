@@ -222,14 +222,15 @@ export function buildTurnResult(state, promptResponse) {
 }
 
 // Creates a session and binds its permission policy in one step so no turn
-// can run on it before the policy is set.
+// can run on it before the policy is set. The await matters: on a brokered
+// client the policy is registered broker-side and returns a promise.
 export async function newSession(client, cwd, options = {}) {
   const session = await client.request("session/new", {
     cwd,
     mcpServers: options.mcpServers ?? []
   });
   if (options.permissionDecision) {
-    client.setSessionPermissionDecision(session.sessionId, options.permissionDecision);
+    await client.setSessionPermissionDecision(session.sessionId, options.permissionDecision);
   }
   return session;
 }

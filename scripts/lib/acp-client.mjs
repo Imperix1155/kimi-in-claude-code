@@ -2,11 +2,17 @@
 // stdio. Promoted from spike/acp-spike.mjs; lifecycle modeled on the codex
 // plugin's app-server.mjs. All agent-specific values come from the profile
 // (agent-profile.mjs) — nothing in here may name a concrete agent.
+import net from "node:net";
 import process from "node:process";
 import { spawn } from "node:child_process";
 import readline from "node:readline";
 import { getAgentProfile } from "./agent-profile.mjs";
+import { parseBrokerEndpoint } from "./broker-endpoint.mjs";
+import { ensureBrokerSession, loadBrokerSession, waitForBrokerEndpoint } from "./broker-lifecycle.mjs";
 import { terminateProcessTree } from "./process.mjs";
+
+export const BROKER_ENDPOINT_ENV = "KIMI_COMPANION_BROKER_ENDPOINT";
+export const BROKER_BUSY_RPC_CODE = -32001;
 
 // Long-lived broker processes accumulate agent stderr; keep only the tail.
 const STDERR_CAP = 64 * 1024;
@@ -54,6 +60,7 @@ class AcpClientBase {
     this.exitResolved = false;
     this.agentInfo = null;
     this.transport = "unknown";
+    this.lineBuffer = "";
 
     this.exitPromise = new Promise((resolve) => {
       this.resolveExit = resolve;
@@ -92,6 +99,27 @@ class AcpClientBase {
         reject(error);
       }
     });
+  }
+
+  // Fire-and-forget JSON-RPC notification (e.g. session/cancel).
+  notify(method, params = {}) {
+    if (this.closed || this.exitResolved) {
+      return;
+    }
+    try {
+      this.sendMessage({ method, params });
+    } catch {}
+  }
+
+  handleChunk(chunk) {
+    this.lineBuffer += chunk;
+    let newlineIndex = this.lineBuffer.indexOf("\n");
+    while (newlineIndex !== -1) {
+      const line = this.lineBuffer.slice(0, newlineIndex);
+      this.lineBuffer = this.lineBuffer.slice(newlineIndex + 1);
+      this.handleLine(line);
+      newlineIndex = this.lineBuffer.indexOf("\n");
+    }
   }
 
   handleLine(line) {
@@ -148,11 +176,21 @@ class AcpClientBase {
       return;
     }
 
-    if (typeof message.method === "string" && this.notificationHandler) {
-      // A throwing observer must not take down the transport.
-      try {
-        this.notificationHandler(message);
-      } catch {}
+    if (typeof message.method === "string") {
+      // Brokered transports relay the broker-side permission answers as
+      // synthetic notifications so observers work across transports.
+      if (message.method === "broker/permission_event") {
+        try {
+          this.onPermissionRequest?.(message.params ?? {});
+        } catch {}
+        return;
+      }
+      if (this.notificationHandler) {
+        // A throwing observer must not take down the transport.
+        try {
+          this.notificationHandler(message);
+        } catch {}
+      }
     }
   }
 
@@ -315,11 +353,103 @@ class SpawnedAcpClient extends AcpClientBase {
   }
 }
 
+class BrokerAcpClient extends AcpClientBase {
+  constructor(cwd, options = {}) {
+    super(cwd, options);
+    this.transport = "broker";
+    this.endpoint = options.brokerEndpoint;
+  }
+
+  async initialize() {
+    await new Promise((resolve, reject) => {
+      const target = parseBrokerEndpoint(this.endpoint);
+      this.socket = net.createConnection({ path: target.path });
+      this.socket.setEncoding("utf8");
+      this.socket.on("connect", resolve);
+      this.socket.on("data", (chunk) => {
+        this.handleChunk(chunk);
+      });
+      this.socket.on("error", (error) => {
+        const wrapped = new AcpError(`Broker connection failed: ${error.message}`, { data: { cause: error.code } });
+        if (!this.exitResolved) {
+          reject(wrapped);
+        }
+        this.handleExit(wrapped);
+      });
+      this.socket.on("close", () => {
+        this.handleExit(this.exitError);
+      });
+    });
+
+    // The broker answers initialize locally with the real agent's info.
+    this.agentInfo = await this.request("initialize", {
+      protocolVersion: this.profile.protocolVersion,
+      clientCapabilities: this.profile.clientCapabilities
+    });
+  }
+
+  // Permission answers happen broker-side, so the policy must live there
+  // too. Returns a promise; await it before starting the session's turn.
+  setSessionPermissionDecision(sessionId, decision) {
+    super.setSessionPermissionDecision(sessionId, decision);
+    return this.request("broker/session_policy", { sessionId, decision });
+  }
+
+  async close() {
+    if (this.closed) {
+      await this.exitPromise;
+      return;
+    }
+
+    this.closed = true;
+    if (this.socket) {
+      this.socket.end();
+    }
+    await this.exitPromise;
+  }
+
+  sendMessage(message) {
+    const socket = this.socket;
+    if (!socket || socket.destroyed) {
+      throw new AcpError("Broker connection is not available.");
+    }
+    socket.write(`${JSON.stringify({ jsonrpc: "2.0", ...message })}\n`);
+  }
+}
+
 export class AcpClient {
-  // Broker transport lands with KMP-6; until then connect() always spawns a
-  // dedicated agent process per the profile.
+  // Transport selection. Unlike the codex reference (broker by default),
+  // broker use is explicit here: an endpoint passed in options, the
+  // KIMI_COMPANION_BROKER_ENDPOINT env var, reuseExistingBroker (attach to a
+  // live broker session if one exists, else spawn direct), or useBroker
+  // (start the shared broker on demand). Default is a dedicated spawned
+  // agent process. disableBroker forces direct spawn regardless — the
+  // broker's own internal client uses it to prevent recursion.
   static async connect(cwd, options = {}) {
-    const client = new SpawnedAcpClient(cwd, options);
+    let brokerEndpoint = null;
+    if (!options.disableBroker) {
+      brokerEndpoint =
+        options.brokerEndpoint ?? options.env?.[BROKER_ENDPOINT_ENV] ?? process.env[BROKER_ENDPOINT_ENV] ?? null;
+      if (!brokerEndpoint && options.reuseExistingBroker) {
+        // Never trust a state record blindly — the broker may have died
+        // without cleaning up. Probe before committing to the endpoint.
+        const existing = loadBrokerSession(cwd)?.endpoint ?? null;
+        if (existing && (await waitForBrokerEndpoint(existing, 150))) {
+          brokerEndpoint = existing;
+        }
+      }
+      if (!brokerEndpoint && options.useBroker) {
+        const brokerSession = await ensureBrokerSession(cwd, { env: options.env, ...(options.brokerOptions ?? {}) });
+        brokerEndpoint = brokerSession?.endpoint ?? null;
+        if (!brokerEndpoint) {
+          throw new AcpError("Failed to start the shared agent broker.");
+        }
+      }
+    }
+
+    const client = brokerEndpoint
+      ? new BrokerAcpClient(cwd, { ...options, brokerEndpoint })
+      : new SpawnedAcpClient(cwd, options);
     try {
       await client.initialize();
     } catch (error) {
