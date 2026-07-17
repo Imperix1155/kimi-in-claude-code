@@ -1,3 +1,56 @@
+// Review-output values are Kimi-authored text downstream of reviewed repo
+// content — hostile values must not be able to spoof rendered structure.
+// Inline fields flatten to one line (control chars stripped, length capped);
+// block fields keep newlines but every line is indented so a "# heading" or
+// "- [critical] ..." inside a body cannot masquerade as renderer output.
+const MAX_INLINE_FIELD_CHARS = 300;
+const MAX_BLOCK_FIELD_CHARS = 4000;
+const MAX_RAW_ECHO_CHARS = 20000;
+
+function sanitizeInline(value, maxChars = MAX_INLINE_FIELD_CHARS) {
+  const flattened = String(value ?? "")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u2028\u2029]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return flattened.length > maxChars ? `${flattened.slice(0, maxChars - 1)}…` : flattened;
+}
+
+function indentBlock(value, indent = "  ", maxChars = MAX_BLOCK_FIELD_CHARS) {
+  let text = String(value ?? "")
+    // Lone \r must become a real newline BEFORE the strip and the split —
+    // markdown treats it as a line break, so leaving it embedded would put
+    // forged content at column zero.
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u2028\u2029]/g, "")
+    .trimEnd();
+  if (text.length > maxChars) {
+    text = `${text.slice(0, maxChars)}\n[truncated]`;
+  }
+  return text
+    .split("\n")
+    .map((line) =>
+      // CommonMark allows headings/bullets with up to three leading spaces,
+      // so indentation alone cannot neutralize them — escape the leading
+      // structure token too.
+      `${indent}${line
+        .replace(/^(\s*)([#>\-*+`])/, "$1\\$2")
+        .replace(/^(\s*)(\d+)([.)])/, "$1$2\\$3")}`
+    )
+    .join("\n");
+}
+
+// A fenced block is only safe when the fence is longer than any backtick
+// run inside the content — otherwise embedded ``` breaks out of the block.
+function safeFence(content, info = "text") {
+  let text = String(content ?? "");
+  if (text.length > MAX_RAW_ECHO_CHARS) {
+    text = `${text.slice(0, MAX_RAW_ECHO_CHARS)}\n[truncated]`;
+  }
+  const longest = Math.max(2, ...[...text.matchAll(/`+/g)].map((match) => match[0].length));
+  const fence = "`".repeat(Math.max(3, longest + 1));
+  return `${fence}${info}\n${text}\n${fence}`;
+}
+
 function severityRank(severity) {
   switch (severity) {
     case "critical":
@@ -189,7 +242,7 @@ function appendReasoningSection(lines, reasoningSummary) {
 
   lines.push("", "Reasoning:");
   for (const section of reasoningSummary) {
-    lines.push(`- ${section}`);
+    lines.push(`- ${sanitizeInline(section, 1000)}`);
   }
 }
 
@@ -242,7 +295,7 @@ export function renderReviewResult(parsedResult, meta) {
     ];
 
     if (parsedResult.rawOutput) {
-      lines.push("", "Raw final message:", "", "```text", parsedResult.rawOutput, "```");
+      lines.push("", "Raw final message:", "", safeFence(parsedResult.rawOutput));
     }
 
     appendReasoningSection(lines, meta.reasoningSummary ?? parsedResult.reasoningSummary);
@@ -255,14 +308,14 @@ export function renderReviewResult(parsedResult, meta) {
     const lines = [
       `# Kimi ${meta.reviewLabel}`,
       "",
-      `Target: ${meta.targetLabel}`,
+      `Target: ${sanitizeInline(meta.targetLabel)}`,
       "Kimi returned JSON with an unexpected review shape.",
       "",
       `- Validation error: ${validationError}`
     ];
 
     if (parsedResult.rawOutput) {
-      lines.push("", "Raw final message:", "", "```text", parsedResult.rawOutput, "```");
+      lines.push("", "Raw final message:", "", safeFence(parsedResult.rawOutput));
     }
 
     appendReasoningSection(lines, meta.reasoningSummary ?? parsedResult.reasoningSummary);
@@ -275,10 +328,10 @@ export function renderReviewResult(parsedResult, meta) {
   const lines = [
     `# Kimi ${meta.reviewLabel}`,
     "",
-    `Target: ${meta.targetLabel}`,
-    `Verdict: ${data.verdict}`,
+    `Target: ${sanitizeInline(meta.targetLabel)}`,
+    `Verdict: ${sanitizeInline(data.verdict, 40)}`,
     "",
-    data.summary,
+    sanitizeInline(data.summary, 2000),
     ""
   ];
 
@@ -288,10 +341,10 @@ export function renderReviewResult(parsedResult, meta) {
     lines.push("Findings:");
     for (const finding of findings) {
       const lineSuffix = formatLineRange(finding);
-      lines.push(`- [${finding.severity}] ${finding.title} (${finding.file}${lineSuffix})`);
-      lines.push(`  ${finding.body}`);
+      lines.push(`- [${sanitizeInline(finding.severity, 20)}] ${sanitizeInline(finding.title)} (${sanitizeInline(finding.file)}${lineSuffix})`);
+      lines.push(indentBlock(finding.body));
       if (finding.recommendation) {
-        lines.push(`  Recommendation: ${finding.recommendation}`);
+        lines.push(`  Recommendation: ${sanitizeInline(finding.recommendation, 1000)}`);
       }
     }
   }
@@ -299,7 +352,7 @@ export function renderReviewResult(parsedResult, meta) {
   if (data.next_steps.length > 0) {
     lines.push("", "Next steps:");
     for (const step of data.next_steps) {
-      lines.push(`- ${step}`);
+      lines.push(`- ${sanitizeInline(step, 500)}`);
     }
   }
 
