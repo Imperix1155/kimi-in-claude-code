@@ -20,10 +20,12 @@ A Claude Code plugin that delegates code reviews and tasks to the Kimi Code CLI 
 ## Verification
 
 - `node spike/acp-spike.mjs` must print `SPIKE-GREEN` — proves the live ACP loop (requires `kimi login`; logged-out state fails at `session/new` with `-32000`). Also the regression check after any `kimi` CLI upgrade.
+- `node tests/acp-client.test.mjs` must print `ACP-CLIENT-TESTS-GREEN` — deterministic acp-client suite against the scripted fake agent (no login needed). Run after any change to `scripts/lib/acp-client.mjs` or `scripts/lib/agent-profile.mjs`.
 
 ## Child DOX Index
 
 - `docs/PLAN.md`, `docs/ROADMAP.md` — see Local Contracts.
 - `spike/acp-spike.mjs` — M1 feasibility spike, verified 2026-07-15 (kimi v1.48.0).
 - `README.md`, `LICENSE`, `NOTICE` — public-facing.
-- `.claude-plugin/`, `commands/`, `agents/`, `skills/`, `prompts/`, `hooks/`, `schemas/`, `scripts/` — plugin skeleton forked verbatim from codex-plugin-cc 1.0.4 (KMP-1, 2026-07-16). Still codex-named until the KMP-2 rename pass; do not treat file/env names in these dirs as final.
+- `.claude-plugin/`, `commands/`, `agents/`, `skills/`, `prompts/`, `hooks/`, `schemas/`, `scripts/` — plugin skeleton forked verbatim from codex-plugin-cc 1.0.4 (KMP-1, 2026-07-16). Env vars renamed KMP-2; `scripts/lib/agent-profile.mjs` (KMP-3) and `scripts/lib/acp-client.mjs` (KMP-4) are ours; remaining codex-named files pending their epic items.
+- `tests/` — plain-node assertion suites + `fixtures/fake-acp-agent.mjs` (scenario-driven scripted ACP agent). No test framework by design; each suite prints a `*-GREEN` sentinel.
