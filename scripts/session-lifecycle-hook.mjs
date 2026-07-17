@@ -4,7 +4,7 @@ import fs from "node:fs";
 import process from "node:process";
 
 import { terminateProcessTree } from "./lib/process.mjs";
-import { BROKER_ENDPOINT_ENV } from "./lib/app-server.mjs";
+import { BROKER_ENDPOINT_ENV } from "./lib/acp-client.mjs";
 import {
   clearBrokerSession,
   LOG_FILE_ENV,

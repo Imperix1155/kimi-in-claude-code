@@ -41,12 +41,18 @@ rl.on("line", (line) => {
     return;
   }
 
-  // Client->agent notification: session/cancel resolves a held turn.
+  // Client->agent notification: session/cancel resolves a held turn. A
+  // cancel arriving BEFORE the prompt is remembered and applied to the next
+  // prompt immediately (mirrors real agents: no interleaving hangs forever).
   if (message.id === undefined && message.method === "session/cancel") {
-    if (scenario === "cancellable" && heldPromptId !== null) {
-      const promptId = heldPromptId;
-      heldPromptId = null;
-      send({ id: promptId, result: { stopReason: "cancelled" } });
+    if (scenario === "cancellable") {
+      if (heldPromptId !== null) {
+        const promptId = heldPromptId;
+        heldPromptId = null;
+        send({ id: promptId, result: { stopReason: "cancelled" } });
+      } else {
+        observed.pendingCancel = true;
+      }
     }
     return;
   }
@@ -61,6 +67,12 @@ rl.on("line", (line) => {
       return;
     }
     send({ id: message.id, result: { protocolVersion: 1 } });
+    return;
+  }
+
+  if (message.method === "session/load") {
+    observed.wasLoaded = true;
+    send({ id: message.id, result: {} });
     return;
   }
 
@@ -88,9 +100,10 @@ rl.on("line", (line) => {
       const options = scenario === "permission-standard"
         ? [{ optionId: "ok", kind: "allow_once" }, { optionId: "no", kind: "reject_once" }]
         : [{ optionId: "ok", kind: "allow_once" }];
-      agentRequest("session/request_permission", { sessionId: "sess-1", options }, (response) => {
+      agentRequest("session/request_permission", { sessionId: message.params.sessionId ?? "sess-1", options }, (response) => {
         observed.permissionResponse = response;
-        send({ method: "session/update", params: { sessionId: "sess-1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "done" } } } });
+        const outcome = response.result?.outcome?.optionId ?? response.result?.outcome?.outcome ?? "unknown";
+        send({ method: "session/update", params: { sessionId: message.params.sessionId ?? "sess-1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `done perm:${outcome}` } } } });
         send({ id: message.id, result: { stopReason: "end_turn", observed } });
       });
       return;
@@ -113,8 +126,19 @@ rl.on("line", (line) => {
       return;
     }
 
-    if (scenario === "slow-prompt") {
-      setTimeout(() => send({ id: message.id, result: { stopReason: "end_turn" } }), 500);
+    if (scenario === "slow-prompt" || scenario === "slow-prompt-3s") {
+      const delay = scenario === "slow-prompt-3s" ? 3000 : 500;
+      setTimeout(() => {
+        send({ method: "session/update", params: { sessionId: message.params.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "slow done" } } } });
+        send({ id: message.id, result: { stopReason: "end_turn" } });
+      }, delay);
+      return;
+    }
+
+    if (scenario === "resume-check") {
+      const text = observed.wasLoaded ? "resumed-session" : "fresh-session";
+      send({ method: "session/update", params: { sessionId: message.params.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } } });
+      send({ id: message.id, result: { stopReason: "end_turn" } });
       return;
     }
 
@@ -125,6 +149,11 @@ rl.on("line", (line) => {
     }
 
     if (scenario === "cancellable") {
+      if (observed.pendingCancel) {
+        observed.pendingCancel = false;
+        send({ id: message.id, result: { stopReason: "cancelled" } });
+        return;
+      }
       heldPromptId = message.id;
       return;
     }

@@ -1,10 +1,19 @@
-// Turn-capture accumulator: maps ACP session/update notifications into
-// progress reporting and final result assembly. Ported from the codex
-// plugin's TurnCaptureState pattern (lib/codex.mjs), much reduced: ACP has
-// no subagent threads and turn completion is the session/prompt RESPONSE,
-// not a notification, so no inferred-completion machinery is needed.
-// Agent-specific values stay in agent-profile.mjs; this file owns only the
-// ACP notification vocabulary.
+// Turn-capture accumulator + engine orchestration: maps ACP session/update
+// notifications into progress reporting and final result assembly, and
+// exposes the high-level entry points the companion CLI drives (runKimiTurn,
+// cancelKimiSession, availability/runtime probes). Ported from the codex
+// plugin's lib/codex.mjs, much reduced: ACP has no subagent threads and turn
+// completion is the session/prompt RESPONSE, not a notification. Agent
+// specifics stay in agent-profile.mjs; this file owns only the ACP
+// vocabulary and orchestration.
+import process from "node:process";
+import { AcpClient, BROKER_BUSY_RPC_CODE, BROKER_ENDPOINT_ENV } from "./acp-client.mjs";
+import { AGENT_SPAWN_ENV, getAgentProfile, isAuthRequiredError } from "./agent-profile.mjs";
+import { loadBrokerSession } from "./broker-lifecycle.mjs";
+import { binaryAvailable } from "./process.mjs";
+
+export const DEFAULT_CONTINUE_PROMPT =
+  "Continue from the current session state. Pick the next highest-value step and follow through until the task is resolved.";
 
 const EDITING_TOOL_KINDS = new Set(["edit", "delete", "move"]);
 
@@ -20,14 +29,16 @@ function shorten(text, limit = 96) {
 }
 
 // Same reporter contract as the codex plugin: a string for plain updates or
-// { message, phase } when a phase applies.
-function emitProgress(onProgress, message, phase = null) {
+// { message, phase, ...extra } when structure applies. The extra fields
+// matter: threadId on the session-ready event is how a RUNNING job's record
+// learns its ACP sessionId, which /kimi:cancel needs to target the turn.
+function emitProgress(onProgress, message, phase = null, extra = {}) {
   if (!onProgress || !message) {
     return;
   }
   try {
-    if (phase) {
-      onProgress({ message, phase });
+    if (phase || Object.keys(extra).length > 0) {
+      onProgress({ message, phase, ...extra });
     } else {
       onProgress(message);
     }
@@ -275,6 +286,128 @@ function removeCapture(client, state) {
   if (entry.captures.size === 0) {
     clientCaptures.delete(client);
     client.setNotificationHandler(entry.base ?? null);
+  }
+}
+
+export function getKimiAvailability(cwd) {
+  // With a spawn override active, the override IS the agent — probing the
+  // real binary would wrongly fail on hosts without Kimi installed.
+  if (process.env[AGENT_SPAWN_ENV]) {
+    return { available: true, detail: `agent spawn override active (${AGENT_SPAWN_ENV})` };
+  }
+  const profile = getAgentProfile();
+  // Deeper probes (acp --help, known-good version drift) belong to the
+  // setup command (KMP-12); the ACP handshake itself is the real check.
+  return binaryAvailable(profile.probe.command, profile.probe.args, { cwd });
+}
+
+export function getSessionRuntimeStatus(env = process.env, cwd = process.cwd()) {
+  const endpoint = env?.[BROKER_ENDPOINT_ENV] ?? loadBrokerSession(cwd)?.endpoint ?? null;
+  if (endpoint) {
+    return {
+      mode: "shared",
+      label: "shared session",
+      detail: "This Claude session reuses one shared Kimi runtime.",
+      endpoint
+    };
+  }
+
+  return {
+    mode: "direct",
+    label: "on-demand startup",
+    detail: "No shared Kimi runtime is active yet. The first task command will start one on demand.",
+    endpoint: null
+  };
+}
+
+export function isBrokerBusyError(error) {
+  return error?.code === BROKER_BUSY_RPC_CODE;
+}
+
+function rethrowWithLoginHint(profile, error) {
+  if (isAuthRequiredError(profile, error)) {
+    throw new Error(`Kimi is not logged in. ${profile.auth.loginInstructions}`);
+  }
+  throw error;
+}
+
+// Connect through the shared broker (starting it on demand), run fn, always
+// close the socket. The broker outlives us; only our connection ends.
+export async function withKimiClient(cwd, fn, options = {}) {
+  const client = await AcpClient.connect(cwd, { useBroker: true, ...options });
+  try {
+    return await fn(client);
+  } finally {
+    await client.close().catch(() => {});
+  }
+}
+
+// One full task turn: session create-or-load, permission policy from the
+// write flag (reject = read-only guarantee), prompt, captured result.
+// Resume goes through session/load — verified live 2026-07-17: context
+// survives both a new broker socket AND a fresh agent process (PLAN §7
+// risk 2 closed; no stateless fallback needed).
+export async function runKimiTurn(cwd, options = {}) {
+  const profile = getAgentProfile();
+  const availability = getKimiAvailability(cwd);
+  if (!availability.available) {
+    throw new Error("Kimi Code CLI is not installed or not on PATH. Install it (https://github.com/MoonshotAI/kimi-code), then rerun /kimi:setup.");
+  }
+
+  return withKimiClient(cwd, async (client) => {
+    const decision = options.write ? "allow" : "reject";
+    let sessionId;
+
+    if (options.resumeSessionId) {
+      emitProgress(options.onProgress, `Loading session ${options.resumeSessionId}.`, "starting");
+      try {
+        await client.request("session/load", { sessionId: options.resumeSessionId, cwd, mcpServers: [] });
+      } catch (error) {
+        rethrowWithLoginHint(profile, error);
+      }
+      sessionId = options.resumeSessionId;
+      await client.setSessionPermissionDecision(sessionId, decision);
+    } else {
+      emitProgress(options.onProgress, "Starting Kimi session.", "starting");
+      let session;
+      try {
+        session = await newSession(client, cwd, { permissionDecision: decision });
+      } catch (error) {
+        rethrowWithLoginHint(profile, error);
+      }
+      sessionId = session.sessionId;
+    }
+
+    emitProgress(options.onProgress, `Session ready (${sessionId}).`, "starting", { threadId: sessionId });
+
+    const prompt = options.prompt?.trim() || options.defaultPrompt || "";
+    if (!prompt) {
+      throw new Error("A prompt is required for this Kimi run.");
+    }
+
+    const result = await runPromptTurn(client, { sessionId, prompt, onProgress: options.onProgress });
+    return { ...result, sessionId, stderr: client.stderr ?? "" };
+  }, options.clientOptions);
+}
+
+// Best-effort cancel of a running turn via the live broker. Never spawns a
+// broker or agent just to cancel; if no shared runtime is up, there is no
+// agent-side turn to stop (the worker process kill handles the rest).
+export async function cancelKimiSession(cwd, { sessionId }) {
+  if (!sessionId) {
+    return { attempted: false, detail: "missing sessionId" };
+  }
+  const endpoint = loadBrokerSession(cwd)?.endpoint ?? null;
+  if (!endpoint) {
+    return { attempted: false, detail: "no shared Kimi runtime is active" };
+  }
+  try {
+    const client = await AcpClient.connect(cwd, { brokerEndpoint: endpoint });
+    client.notify("session/cancel", { sessionId });
+    await client.close();
+    return { attempted: true, detail: `Sent session/cancel for ${sessionId}.` };
+  } catch (error) {
+    return { attempted: false, detail: error instanceof Error ? error.message : String(error) };
   }
 }
 

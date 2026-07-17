@@ -1,7 +1,8 @@
 import fs from "node:fs";
+import process from "node:process";
 
-import { getSessionRuntimeStatus } from "./codex.mjs";
-import { getConfig, listJobs, readJobFile, resolveJobFile } from "./state.mjs";
+import { getSessionRuntimeStatus } from "./kimi.mjs";
+import { getConfig, listJobs, readJobFile, resolveJobFile, upsertJob } from "./state.mjs";
 import { SESSION_ID_ENV } from "./tracked-jobs.mjs";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
 
@@ -10,6 +11,42 @@ export const DEFAULT_MAX_PROGRESS_LINES = 4;
 
 export function sortJobsNewestFirst(jobs) {
   return [...jobs].sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
+}
+
+function isProcessAlive(pid) {
+  if (!Number.isFinite(pid)) {
+    return false;
+  }
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // EPERM means it exists but is not ours.
+    return error?.code === "EPERM";
+  }
+}
+
+// An externally killed or crashed worker cannot update its own record, so
+// active statuses are reconciled against process liveness on every read.
+// This also keeps /kimi:cancel from signalling a recycled pid for a job
+// whose worker died long ago.
+export function reconcileActiveJobs(workspaceRoot) {
+  for (const job of listJobs(workspaceRoot)) {
+    if (job.status !== "queued" && job.status !== "running") {
+      continue;
+    }
+    if (!Number.isFinite(job.pid) || isProcessAlive(job.pid)) {
+      continue;
+    }
+    upsertJob(workspaceRoot, {
+      id: job.id,
+      status: "failed",
+      phase: "failed",
+      pid: null,
+      errorMessage: "Worker process died without recording a result.",
+      completedAt: new Date().toISOString()
+    });
+  }
 }
 
 function getCurrentSessionId(options = {}) {
@@ -28,20 +65,17 @@ function getJobTypeLabel(job) {
   if (typeof job.kindLabel === "string" && job.kindLabel) {
     return job.kindLabel;
   }
-  if (job.kind === "adversarial-review") {
-    return "adversarial-review";
-  }
   if (job.jobClass === "review") {
     return "review";
   }
   if (job.jobClass === "task") {
-    return "rescue";
+    return "task";
   }
   if (job.kind === "review") {
     return "review";
   }
   if (job.kind === "task") {
-    return "rescue";
+    return "task";
   }
   return "job";
 }
@@ -122,7 +156,7 @@ function inferLegacyJobPhase(job, progressPreview = []) {
 
   for (let index = progressPreview.length - 1; index >= 0; index -= 1) {
     const line = progressPreview[index].toLowerCase();
-    if (line.startsWith("starting codex") || line.startsWith("thread ready") || line.startsWith("turn started")) {
+    if (line.startsWith("starting kimi") || line.startsWith("thread ready") || line.startsWith("turn started")) {
       return "starting";
     }
     if (line.startsWith("reviewer started") || line.includes("review mode")) {
@@ -150,7 +184,7 @@ function inferLegacyJobPhase(job, progressPreview = []) {
     if (line.startsWith("turn completed")) {
       return "finalizing";
     }
-    if (line.startsWith("codex error:") || line.startsWith("failed:")) {
+    if (line.startsWith("kimi error:") || line.startsWith("failed:")) {
       return "failed";
     }
   }
@@ -207,11 +241,12 @@ function matchJobReference(jobs, reference, predicate = () => true) {
     throw new Error(`Job reference "${reference}" is ambiguous. Use a longer job id.`);
   }
 
-  throw new Error(`No job found for "${reference}". Run /codex:status to list known jobs.`);
+  throw new Error(`No job found for "${reference}". Run /kimi:status to list known jobs.`);
 }
 
 export function buildStatusSnapshot(cwd, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+  reconcileActiveJobs(workspaceRoot);
   const config = getConfig(workspaceRoot);
   const jobs = sortJobsNewestFirst(filterJobsForCurrentSession(listJobs(workspaceRoot), options));
   const maxJobs = options.maxJobs ?? DEFAULT_MAX_STATUS_JOBS;
@@ -241,10 +276,11 @@ export function buildStatusSnapshot(cwd, options = {}) {
 
 export function buildSingleJobSnapshot(cwd, reference, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+  reconcileActiveJobs(workspaceRoot);
   const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
   const selected = matchJobReference(jobs, reference);
   if (!selected) {
-    throw new Error(`No job found for "${reference}". Run /codex:status to inspect known jobs.`);
+    throw new Error(`No job found for "${reference}". Run /kimi:status to inspect known jobs.`);
   }
 
   return {
@@ -255,6 +291,7 @@ export function buildSingleJobSnapshot(cwd, reference, options = {}) {
 
 export function resolveResultJob(cwd, reference) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+  reconcileActiveJobs(workspaceRoot);
   const jobs = sortJobsNewestFirst(reference ? listJobs(workspaceRoot) : filterJobsForCurrentSession(listJobs(workspaceRoot)));
   const selected = matchJobReference(
     jobs,
@@ -268,18 +305,19 @@ export function resolveResultJob(cwd, reference) {
 
   const active = matchJobReference(jobs, reference, (job) => job.status === "queued" || job.status === "running");
   if (active) {
-    throw new Error(`Job ${active.id} is still ${active.status}. Check /codex:status and try again once it finishes.`);
+    throw new Error(`Job ${active.id} is still ${active.status}. Check /kimi:status and try again once it finishes.`);
   }
 
   if (reference) {
-    throw new Error(`No finished job found for "${reference}". Run /codex:status to inspect active jobs.`);
+    throw new Error(`No finished job found for "${reference}". Run /kimi:status to inspect active jobs.`);
   }
 
-  throw new Error("No finished Codex jobs found for this repository yet.");
+  throw new Error("No finished Kimi jobs found for this repository yet.");
 }
 
 export function resolveCancelableJob(cwd, reference, options = {}) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
+  reconcileActiveJobs(workspaceRoot);
   const jobs = sortJobsNewestFirst(listJobs(workspaceRoot));
   const activeJobs = jobs.filter((job) => job.status === "queued" || job.status === "running");
 
@@ -297,12 +335,12 @@ export function resolveCancelableJob(cwd, reference, options = {}) {
     return { workspaceRoot, job: sessionScopedActiveJobs[0] };
   }
   if (sessionScopedActiveJobs.length > 1) {
-    throw new Error("Multiple Codex jobs are active. Pass a job id to /codex:cancel.");
+    throw new Error("Multiple Kimi jobs are active. Pass a job id to /kimi:cancel.");
   }
 
   if (getCurrentSessionId(options)) {
-    throw new Error("No active Codex jobs to cancel for this session.");
+    throw new Error("No active Kimi jobs to cancel for this session.");
   }
 
-  throw new Error("No active Codex jobs to cancel.");
+  throw new Error("No active Kimi jobs to cancel.");
 }

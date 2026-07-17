@@ -6,7 +6,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { getCodexAvailability } from "./lib/codex.mjs";
+import { getKimiAvailability } from "./lib/kimi.mjs";
 import { loadPromptTemplate, interpolateTemplate } from "./lib/prompts.mjs";
 import { getConfig, listJobs } from "./lib/state.mjs";
 import { sortJobsNewestFirst } from "./lib/job-control.mjs";
@@ -57,13 +57,13 @@ function buildStopReviewPrompt(input = {}) {
 }
 
 function buildSetupNote(cwd) {
-  const availability = getCodexAvailability(cwd);
+  const availability = getKimiAvailability(cwd);
   if (availability.available) {
     return null;
   }
 
   const detail = availability.detail ? ` ${availability.detail}.` : "";
-  return `Codex is not set up for the review gate.${detail} Run /codex:setup.`;
+  return `Kimi is not set up for the review gate.${detail} Run /kimi:setup.`;
 }
 
 function parseStopReviewOutput(rawOutput) {
@@ -72,7 +72,7 @@ function parseStopReviewOutput(rawOutput) {
     return {
       ok: false,
       reason:
-        "The stop-time Codex review task returned no final output. Run /codex:review --wait manually or bypass the gate."
+        "The stop-time Kimi review task returned no final output. Run /kimi:review --wait manually or bypass the gate."
     };
   }
 
@@ -84,19 +84,19 @@ function parseStopReviewOutput(rawOutput) {
     const reason = firstLine.slice("BLOCK:".length).trim() || text;
     return {
       ok: false,
-      reason: `Codex stop-time review found issues that still need fixes before ending the session: ${reason}`
+      reason: `Kimi stop-time review found issues that still need fixes before ending the session: ${reason}`
     };
   }
 
   return {
     ok: false,
     reason:
-      "The stop-time Codex review task returned an unexpected answer. Run /codex:review --wait manually or bypass the gate."
+      "The stop-time Kimi review task returned an unexpected answer. Run /kimi:review --wait manually or bypass the gate."
   };
 }
 
 function runStopReview(cwd, input = {}) {
-  const scriptPath = path.join(SCRIPT_DIR, "codex-companion.mjs");
+  const scriptPath = path.join(SCRIPT_DIR, "kimi-companion.mjs");
   const prompt = buildStopReviewPrompt(input);
   const childEnv = {
     ...process.env,
@@ -113,7 +113,7 @@ function runStopReview(cwd, input = {}) {
     return {
       ok: false,
       reason:
-        "The stop-time Codex review task timed out after 15 minutes. Run /codex:review --wait manually or bypass the gate."
+        "The stop-time Kimi review task timed out after 15 minutes. Run /kimi:review --wait manually or bypass the gate."
     };
   }
 
@@ -122,8 +122,8 @@ function runStopReview(cwd, input = {}) {
     return {
       ok: false,
       reason: detail
-        ? `The stop-time Codex review task failed: ${detail}`
-        : "The stop-time Codex review task failed. Run /codex:review --wait manually or bypass the gate."
+        ? `The stop-time Kimi review task failed: ${detail}`
+        : "The stop-time Kimi review task failed. Run /kimi:review --wait manually or bypass the gate."
     };
   }
 
@@ -134,7 +134,7 @@ function runStopReview(cwd, input = {}) {
     return {
       ok: false,
       reason:
-        "The stop-time Codex review task returned invalid JSON. Run /codex:review --wait manually or bypass the gate."
+        "The stop-time Kimi review task returned invalid JSON. Run /kimi:review --wait manually or bypass the gate."
     };
   }
 }
@@ -148,7 +148,7 @@ function main() {
   const jobs = sortJobsNewestFirst(filterJobsForCurrentSession(listJobs(workspaceRoot), input));
   const runningJob = jobs.find((job) => job.status === "queued" || job.status === "running");
   const runningTaskNote = runningJob
-    ? `Codex task ${runningJob.id} is still running. Check /codex:status and use /codex:cancel ${runningJob.id} if you want to stop it before ending the session.`
+    ? `Kimi task ${runningJob.id} is still running. Check /kimi:status and use /kimi:cancel ${runningJob.id} if you want to stop it before ending the session.`
     : null;
 
   if (!config.stopReviewGate) {

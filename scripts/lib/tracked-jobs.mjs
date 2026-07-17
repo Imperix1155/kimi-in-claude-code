@@ -123,7 +123,7 @@ export function createProgressReporter({ stderr = false, logFile = null, onEvent
     const event = normalizeProgressEvent(eventOrMessage);
     const stderrMessage = event.stderrMessage ?? event.message;
     if (stderr && stderrMessage) {
-      process.stderr.write(`[codex] ${stderrMessage}\n`);
+      process.stderr.write(`[kimi] ${stderrMessage}\n`);
     }
     appendLogLine(logFile, event.message);
     appendLogBlock(logFile, event.logTitle, event.logBody);
@@ -153,7 +153,14 @@ export async function runTrackedJob(job, runner, options = {}) {
 
   try {
     const execution = await runner();
-    const completionStatus = execution.exitStatus === 0 ? "completed" : "failed";
+    // A turn stopped by session/cancel is "cancelled", not "failed" — so a
+    // late completion write cannot mislabel a user-cancelled job.
+    const completionStatus = execution.cancelled
+      ? "cancelled"
+      : execution.exitStatus === 0
+        ? "completed"
+        : "failed";
+    const completionPhase = execution.cancelled ? "cancelled" : completionStatus === "completed" ? "done" : "failed";
     const completedAt = nowIso();
     writeJobFile(job.workspaceRoot, job.id, {
       ...runningRecord,
@@ -161,7 +168,7 @@ export async function runTrackedJob(job, runner, options = {}) {
       threadId: execution.threadId ?? null,
       turnId: execution.turnId ?? null,
       pid: null,
-      phase: completionStatus === "completed" ? "done" : "failed",
+      phase: completionPhase,
       completedAt,
       result: execution.payload,
       rendered: execution.rendered
@@ -172,7 +179,7 @@ export async function runTrackedJob(job, runner, options = {}) {
       threadId: execution.threadId ?? null,
       turnId: execution.turnId ?? null,
       summary: execution.summary,
-      phase: completionStatus === "completed" ? "done" : "failed",
+      phase: completionPhase,
       pid: null,
       completedAt
     });

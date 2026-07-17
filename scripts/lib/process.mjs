@@ -101,19 +101,18 @@ export function terminateProcessTree(pid, options = {}) {
     killImpl(-pid, "SIGTERM");
     return { attempted: true, delivered: true, method: "process-group" };
   } catch (error) {
-    if (error?.code !== "ESRCH") {
-      try {
-        killImpl(pid, "SIGTERM");
-        return { attempted: true, delivered: true, method: "process" };
-      } catch (innerError) {
-        if (innerError?.code === "ESRCH") {
-          return { attempted: true, delivered: false, method: "process" };
-        }
-        throw innerError;
+    // ESRCH from the group kill does NOT mean the process is gone: a
+    // non-group-leader pid (e.g. a foreground CLI run) has no group of its
+    // own id. Always fall back to a direct kill before giving up.
+    try {
+      killImpl(pid, "SIGTERM");
+      return { attempted: true, delivered: true, method: "process" };
+    } catch (innerError) {
+      if (innerError?.code === "ESRCH") {
+        return { attempted: true, delivered: false, method: "process" };
       }
+      throw innerError;
     }
-
-    return { attempted: true, delivered: false, method: "process-group" };
   }
 }
 

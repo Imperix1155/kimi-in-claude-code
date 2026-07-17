@@ -20,7 +20,8 @@ A Claude Code plugin that delegates code reviews and tasks to the Kimi Code CLI 
 ## Verification
 
 - `node spike/acp-spike.mjs` must print `SPIKE-GREEN` — proves the live ACP loop (requires `kimi login`; logged-out state fails at `session/new` with `-32000`). Also the regression check after any `kimi` CLI upgrade.
-- `node tests/acp-client.test.mjs` must print `ACP-CLIENT-TESTS-GREEN`, `node tests/kimi.test.mjs` must print `KIMI-TESTS-GREEN`, and `node tests/acp-broker.test.mjs` must print `ACP-BROKER-TESTS-GREEN` — deterministic suites against the scripted fake agent (no login needed). Run all three after any change to `scripts/lib/acp-client.mjs`, `scripts/lib/kimi.mjs`, `scripts/lib/agent-profile.mjs`, `scripts/acp-broker.mjs`, or `scripts/lib/broker-lifecycle.mjs`. The broker suite spawns real detached processes — after it, verify no leaks: `pgrep -f "fake-acp-agent|acp-broker.mjs serve"` must match nothing.
+- Deterministic suites against the scripted fake agent (no login needed), each printing its `*-GREEN` sentinel: `node tests/acp-client.test.mjs`, `node tests/kimi.test.mjs`, `node tests/acp-broker.test.mjs`, `node tests/kimi-companion.test.mjs` (this one drives the real CLI as child processes and ends with its own leak sweep). Run all four after any change to `scripts/lib/*.mjs`, `scripts/acp-broker.mjs`, or `scripts/kimi-companion.mjs`. The broker/companion suites spawn real detached processes — after them, `pgrep -f "fake-acp-agent|acp-broker.mjs serve"` must match nothing.
+- Test seam: `KIMI_COMPANION_AGENT_SPAWN` (JSON `{command, args}`) swaps the spawned agent for the scripted fake in every profile resolution; `CLAUDE_PLUGIN_DATA` isolates job/broker state per test workspace.
 
 ## Child DOX Index
 

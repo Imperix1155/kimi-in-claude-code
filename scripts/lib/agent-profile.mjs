@@ -2,6 +2,11 @@
 // auth probe + login instructions, model IDs, permission-option quirks —
 // lives here, never inline in the engine (PLAN §6 locked decision).
 // Values verified live against kimi v1.48.0 on 2026-07-15 (spike/acp-spike.mjs).
+import process from "node:process";
+
+// Overrides the spawn target for every resolved profile: a custom agent
+// binary path, or the scripted fake agent in tests. JSON {command, args}.
+export const AGENT_SPAWN_ENV = "KIMI_COMPANION_AGENT_SPAWN";
 
 export const kimiProfile = {
   id: "kimi",
@@ -98,6 +103,19 @@ export function getAgentProfile(id = DEFAULT_PROFILE_ID) {
   const profile = PROFILES.get(id);
   if (!profile) {
     throw new Error(`Unknown agent profile "${id}". Known profiles: ${[...PROFILES.keys()].join(", ")}`);
+  }
+  const override = process.env[AGENT_SPAWN_ENV];
+  if (override) {
+    let spawn;
+    try {
+      spawn = JSON.parse(override);
+    } catch {
+      throw new Error(`Invalid ${AGENT_SPAWN_ENV}: must be JSON like {"command":"...","args":[...]}.`);
+    }
+    if (typeof spawn?.command !== "string" || !Array.isArray(spawn.args)) {
+      throw new Error(`Invalid ${AGENT_SPAWN_ENV}: must be JSON like {"command":"...","args":[...]}.`);
+    }
+    return { ...profile, spawn };
   }
   return profile;
 }

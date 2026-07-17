@@ -89,7 +89,58 @@ function removeFileIfExists(filePath) {
   }
 }
 
+// state.json is a shared index mutated by launcher, worker, and cancel
+// processes concurrently; a read/modify/write without a lock can erase
+// another process's update. mkdir is the same atomic primitive the broker
+// lock uses; the wait is synchronous because all callers are sync.
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function acquireStateLock(cwd) {
+  const lockDir = path.join(resolveStateDir(cwd), "state.lock");
+  fs.mkdirSync(path.dirname(lockDir), { recursive: true });
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try {
+      fs.mkdirSync(lockDir);
+      return lockDir;
+    } catch (error) {
+      if (error?.code !== "EEXIST") {
+        throw error;
+      }
+      try {
+        const stat = fs.statSync(lockDir);
+        if (Date.now() - stat.mtimeMs > 2000) {
+          fs.rmdirSync(lockDir);
+          continue;
+        }
+      } catch {}
+      sleepSync(50);
+    }
+  }
+  // Proceeding unlocked beats deadlocking a CLI command forever.
+  return null;
+}
+
+function releaseStateLock(lockDir) {
+  if (!lockDir) {
+    return;
+  }
+  try {
+    fs.rmdirSync(lockDir);
+  } catch {}
+}
+
 export function saveState(cwd, state) {
+  const lock = acquireStateLock(cwd);
+  try {
+    return saveStateUnlocked(cwd, state);
+  } finally {
+    releaseStateLock(lock);
+  }
+}
+
+function saveStateUnlocked(cwd, state) {
   const previousJobs = loadState(cwd).jobs;
   ensureStateDir(cwd);
   const nextJobs = pruneJobs(state.jobs ?? []);
@@ -116,9 +167,14 @@ export function saveState(cwd, state) {
 }
 
 export function updateState(cwd, mutate) {
-  const state = loadState(cwd);
-  mutate(state);
-  return saveState(cwd, state);
+  const lock = acquireStateLock(cwd);
+  try {
+    const state = loadState(cwd);
+    mutate(state);
+    return saveStateUnlocked(cwd, state);
+  } finally {
+    releaseStateLock(lock);
+  }
 }
 
 export function generateJobId(prefix = "job") {
