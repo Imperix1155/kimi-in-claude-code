@@ -308,6 +308,49 @@ function pathToImport(relative) {
   shutdownBroker(env, cwd);
 }
 
+// 7b. --read-only always beats --write, tested in BOTH the pre-tokenized
+// shape and the REAL slash-command shape (one quoted string that the CLI
+// re-tokenizes — the /kimi:task command prepends "--write " inside it).
+{
+  const { cwd, env } = makeWorkspace("permission-standard");
+  const pretokenized = runCli(["task", "--write", "--read-only", "--json", "cautious thing"], { env, cwd });
+  assert.equal(pretokenized.status, 0, pretokenized.stderr);
+  assert.equal(JSON.parse(pretokenized.stdout).permissionEvents[0].decision, "reject");
+  shutdownBroker(env, cwd);
+}
+{
+  const { cwd, env } = makeWorkspace("permission-standard");
+  const singleString = runCli(["task", "--write --read-only --json cautious thing"], { env, cwd });
+  assert.equal(singleString.status, 0, singleString.stderr);
+  const payload = JSON.parse(singleString.stdout);
+  assert.match(payload.rawOutput, /perm:no/);
+  assert.equal(payload.permissionEvents[0].decision, "reject");
+  shutdownBroker(env, cwd);
+}
+{
+  const { cwd, env } = makeWorkspace("permission-standard");
+  const reversed = runCli(["task", "--read-only --write --json cautious thing"], { env, cwd });
+  assert.equal(reversed.status, 0, reversed.stderr);
+  assert.equal(JSON.parse(reversed.stdout).permissionEvents[0].decision, "reject");
+  shutdownBroker(env, cwd);
+}
+
+// 7c. Resume rebinds the permission policy: a session created write-enabled
+// is resumed read-only, and the rejection actually reaches the agent.
+{
+  const { cwd, env } = makeWorkspace("permission-standard");
+  const first = runCli(["task", "--write", "--json", "start it"], { env, cwd });
+  assert.equal(first.status, 0, first.stderr);
+  assert.equal(JSON.parse(first.stdout).permissionEvents[0].decision, "allow");
+
+  const resumed = runCli(["task", "--resume-last", "--read-only", "--json", "continue carefully"], { env, cwd });
+  assert.equal(resumed.status, 0, resumed.stderr);
+  const payload = JSON.parse(resumed.stdout);
+  assert.match(payload.rawOutput, /perm:no/);
+  assert.equal(payload.permissionEvents[0].decision, "reject", "resume must rebind the policy to read-only");
+  shutdownBroker(env, cwd);
+}
+
 // 8. Externally killed worker: status must reconcile the record to failed
 // instead of reporting "running" forever, and cancel must then refuse.
 {

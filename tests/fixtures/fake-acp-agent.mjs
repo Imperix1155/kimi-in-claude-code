@@ -296,6 +296,9 @@ rl.on("line", (line) => {
       // Completed edit reporting only diff content, no locations.
       update({ sessionUpdate: "tool_call", toolCallId: "t4", title: "Diff-only edit", kind: "edit", status: "in_progress" });
       update({ sessionUpdate: "tool_call_update", toolCallId: "t4", status: "completed", content: [{ type: "diff", path: "/tmp/z.mjs", oldText: "a", newText: "b" }] });
+      // Kimi-realistic: kind "other" + diff block is the only write signal.
+      update({ sessionUpdate: "tool_call", toolCallId: "t5", title: "WriteFile: /tmp/w.mjs", kind: "other", status: "in_progress" });
+      update({ sessionUpdate: "tool_call_update", toolCallId: "t5", status: "completed", content: [{ type: "diff", path: "/tmp/w.mjs", oldText: "", newText: "x" }] });
       update({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "thinking hard" } });
       update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Hello, " } });
       update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "world." } });

@@ -193,18 +193,24 @@ export function applySessionUpdate(state, notification) {
   }
 }
 
-// Best-effort: only COMPLETED edit-kind calls count (a rejected edit touched
-// nothing), with diff-content blocks as the path source when locations are
-// absent. Consumers wanting ground truth should diff the worktree.
+// Best-effort: only COMPLETED calls count (a rejected edit touched nothing).
+// A diff-type content block is the modification signal REGARDLESS of the
+// advertised tool kind — verified live 2026-07-17: kimi reports its edits
+// as kind "other" with empty locations, and only the diff block (with its
+// required path field) reveals the write. Edit-kind locations still count
+// for agents that do populate them. Consumers wanting ground truth should
+// diff the worktree.
 function collectTouchedFiles(state) {
   const paths = new Set();
   for (const call of state.toolCalls.values()) {
-    if (!EDITING_TOOL_KINDS.has(call.kind) || call.status !== "completed") {
+    if (call.status !== "completed") {
       continue;
     }
-    for (const location of call.locations ?? []) {
-      if (location?.path) {
-        paths.add(location.path);
+    if (EDITING_TOOL_KINDS.has(call.kind)) {
+      for (const location of call.locations ?? []) {
+        if (location?.path) {
+          paths.add(location.path);
+        }
       }
     }
     for (const block of Array.isArray(call.content) ? call.content : []) {

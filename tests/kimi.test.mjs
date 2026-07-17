@@ -53,7 +53,7 @@ function connectTo(scenario, options = {}) {
   assert.equal(result.agentMessage, "Hello, world.");
   assert.equal(result.reasoning, "thinking hard");
 
-  assert.equal(result.toolCalls.length, 5);
+  assert.equal(result.toolCalls.length, 6);
   const byId = new Map(result.toolCalls.map((call) => [call.toolCallId, call]));
   assert.equal(byId.get("t1").status, "completed");
   assert.equal(byId.get("t2").status, "completed");
@@ -61,9 +61,11 @@ function connectTo(scenario, options = {}) {
   assert.equal(byId.get("ghost").status, "failed");
   assert.equal(byId.get("t3").status, "failed");
   assert.equal(byId.get("t4").status, "completed");
+  assert.equal(byId.get("t5").status, "completed");
 
-  // Failed edit excluded; diff-only completed edit included.
-  assert.deepEqual(result.touchedFiles, ["/tmp/x.mjs", "/tmp/y.mjs", "/tmp/z.mjs"]);
+  // Failed edit excluded; diff-only edits included — including the
+  // kimi-realistic kind-"other" write whose only signal is the diff block.
+  assert.deepEqual(result.touchedFiles, ["/tmp/x.mjs", "/tmp/y.mjs", "/tmp/z.mjs", "/tmp/w.mjs"]);
   assert.equal(result.plan.length, 2);
   assert.ok(result.plan.every((entry) => entry.status === "completed"));
   assert.deepEqual(result.unknownUpdateKinds, ["future_unknown_kind"]);

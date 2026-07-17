@@ -70,7 +70,7 @@ function printUsage() {
     [
       "Usage:",
       "  node scripts/kimi-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <id|highspeed|k3>] [focus text]",
-      "  node scripts/kimi-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <id|highspeed|k3>] [--prompt-file <path>] [prompt]",
+      "  node scripts/kimi-companion.mjs task [--background] [--write|--read-only] [--resume-last|--resume|--fresh] [--model <id|highspeed|k3>] [--prompt-file <path>] [prompt]",
       "  node scripts/kimi-companion.mjs status [job-id] [--all] [--wait] [--json]",
       "  node scripts/kimi-companion.mjs result [job-id] [--json]",
       "  node scripts/kimi-companion.mjs cancel [job-id] [--json]",
@@ -551,7 +551,7 @@ function readTaskPrompt(cwd, options, positionals) {
 async function handleTask(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["cwd", "prompt-file", "model", "effort"],
-    booleanOptions: ["json", "write", "resume-last", "resume", "fresh", "background"],
+    booleanOptions: ["json", "write", "read-only", "resume-last", "resume", "fresh", "background"],
     aliasMap: {
       m: "model"
     }
@@ -571,7 +571,10 @@ async function handleTask(argv) {
   if (resumeLast && fresh) {
     throw new Error("Choose either --resume/--resume-last or --fresh.");
   }
-  const write = Boolean(options.write);
+  // The /kimi:task command appends --write by default (PLAN §6: task mode
+  // is auto-approve); --read-only is the explicit escape hatch and always
+  // wins so a caller can never be surprised into a write-enabled run.
+  const write = Boolean(options.write) && !options["read-only"];
   if (!prompt && !resumeLast) {
     throw new Error("Provide a prompt, a prompt file, piped stdin, or use --resume-last.");
   }
