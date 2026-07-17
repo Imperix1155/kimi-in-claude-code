@@ -87,6 +87,9 @@ async function main() {
   const appClient = await AcpClient.connect(cwd, {
     disableBroker: true,
     profile,
+    // Relay is best-effort while a socket owns the turn; the POLICY answer
+    // itself is unconditional (appClient answers even with no socket to
+    // notify), so a late or orphaned permission request still fails safe.
     onPermissionRequest: (event) => {
       if (activeSocket) {
         send(activeSocket, { method: "broker/permission_event", params: event });

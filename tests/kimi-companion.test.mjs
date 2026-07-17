@@ -283,19 +283,28 @@ function pathToImport(relative) {
 }
 
 // 7. --write end to end: the allow policy reaches the session the task runs
-// on (fixture reports which permission option the broker selected).
+// on (fixture reports which option the broker selected) AND the permission
+// event plumbing records the decision on the job payload.
 {
   const { cwd, env } = makeWorkspace("permission-standard");
-  const writeRun = runCli(["task", "--write", "edit something"], { env, cwd });
+  const writeRun = runCli(["task", "--write", "--json", "edit something"], { env, cwd });
   assert.equal(writeRun.status, 0, `write task failed: ${writeRun.stderr}`);
-  assert.match(writeRun.stdout, /perm:ok/);
+  const payload = JSON.parse(writeRun.stdout);
+  assert.match(payload.rawOutput, /perm:ok/);
+  assert.equal(payload.permissionEvents.length, 1);
+  assert.equal(payload.permissionEvents[0].decision, "allow");
+  assert.equal(payload.permissionEvents[0].optionId, "ok");
   shutdownBroker(env, cwd);
 }
 {
   const { cwd, env } = makeWorkspace("permission-standard");
-  const readRun = runCli(["task", "read-only thing"], { env, cwd });
+  const readRun = runCli(["task", "--json", "read-only thing"], { env, cwd });
   assert.equal(readRun.status, 0);
-  assert.match(readRun.stdout, /perm:no/);
+  const payload = JSON.parse(readRun.stdout);
+  assert.match(payload.rawOutput, /perm:no/);
+  assert.equal(payload.permissionEvents.length, 1);
+  assert.equal(payload.permissionEvents[0].decision, "reject");
+  assert.equal(payload.permissionEvents[0].optionId, "no");
   shutdownBroker(env, cwd);
 }
 
@@ -388,6 +397,20 @@ function makeGitWorkspace(scenario) {
   shutdownBroker(env, cwd);
 }
 
+// 11d. A review turn that ends with NO message at all is a failed review
+// (regression: empty stderr as failureMessage laundered parseError to "").
+{
+  const { cwd, env } = makeGitWorkspace("review-empty");
+  const review = runCli(["review", "--wait", "--json"], { env, cwd });
+  assert.notEqual(review.status, 0, "empty review output must exit nonzero");
+  const payload = JSON.parse(review.stdout);
+  assert.equal(payload.result, null);
+  assert.match(payload.parseError ?? "", /did not return/);
+  const status = runCli(["status", "--json", "--all"], { env, cwd });
+  assert.equal(JSON.parse(status.stdout).latestFinished.status, "failed", "empty review must persist as failed");
+  shutdownBroker(env, cwd);
+}
+
 // 11b. Schema-invalid JSON (verdict outside the enum) also fails the review.
 {
   const { cwd, env } = makeGitWorkspace("review-invalid-schema");
@@ -416,6 +439,25 @@ function makeGitWorkspace(scenario) {
   const review = runCli(["review", "--wait"], { env, cwd });
   assert.notEqual(review.status, 0);
   assert.match(review.stderr + review.stdout, /Git repository/i);
+}
+
+// 13. M3 security criterion: a write attempt DURING A REVIEW is rejected,
+// and the reject path is ASSERTED three ways — the agent saw the reject
+// option selected (summary echo), our handler recorded the event with the
+// reject decision, and the review still completed with a valid verdict.
+{
+  const { cwd, env } = makeGitWorkspace("review-write-attempt");
+  const review = runCli(["review", "--wait", "--json"], { env, cwd });
+  assert.equal(review.status, 0, `review failed: ${review.stderr}`);
+  const payload = JSON.parse(review.stdout);
+  assert.equal(payload.result.summary, "perm-outcome:no", "the agent must have received the REJECT option");
+  assert.equal(payload.permissionRejections, 1, "the reject path must be recorded, not inferred");
+  assert.ok(payload.permissionEvents.every((event) => event.decision === "reject"));
+  assert.equal(payload.result.verdict, "needs-attention");
+
+  const status = runCli(["status", "--json", "--all"], { env, cwd });
+  assert.equal(JSON.parse(status.stdout).latestFinished.status, "completed");
+  shutdownBroker(env, cwd);
 }
 
 // Final leak sweep: the suite itself fails if any scenario left a broker or

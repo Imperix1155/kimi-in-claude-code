@@ -178,9 +178,39 @@ rl.on("line", (line) => {
       return;
     }
 
+    if (scenario === "review-empty") {
+      // Turn ends with NO message at all — must be a failed review, not a
+      // silent success (live-caught: empty stderr laundered the parse error).
+      send({ id: message.id, result: { stopReason: "end_turn" } });
+      return;
+    }
+
     if (scenario === "review-bad-json") {
       send({ method: "session/update", params: { sessionId: message.params.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "I could not produce structured output, sorry." } } } });
       send({ id: message.id, result: { stopReason: "end_turn" } });
+      return;
+    }
+
+    if (scenario === "review-write-attempt") {
+      // Mid-review write attempt: the client's answer decides the review's
+      // reported summary, so tests can assert the reject FIRED end to end.
+      const options = [{ optionId: "ok", kind: "allow_once" }, { optionId: "no", kind: "reject_once" }];
+      agentRequest(
+        "session/request_permission",
+        { sessionId: message.params.sessionId, toolCall: { toolCallId: "w1", title: "Write review-notes.txt", kind: "edit" }, options },
+        (response) => {
+          observed.permissionResponse = response;
+          const outcome = response.result?.outcome?.optionId ?? response.result?.outcome?.outcome ?? "unknown";
+          const review = {
+            verdict: "needs-attention",
+            summary: `perm-outcome:${outcome}`,
+            findings: [],
+            next_steps: ["Investigate the write attempt."]
+          };
+          send({ method: "session/update", params: { sessionId: message.params.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: JSON.stringify(review) } } } });
+          send({ id: message.id, result: { stopReason: "end_turn", observed } });
+        }
+      );
       return;
     }
 

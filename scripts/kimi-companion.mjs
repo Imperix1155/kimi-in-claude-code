@@ -15,6 +15,7 @@ import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
 import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
 import {
+  assertReadOnlyPermissionEvents,
   cancelKimiSession,
   DEFAULT_CONTINUE_PROMPT,
   getKimiAvailability,
@@ -267,9 +268,20 @@ async function executeReviewRun(request) {
     });
   }
 
+  // Defense in depth for the read-only guarantee: reviews run with the
+  // reject policy, so a granted permission here means the policy wiring
+  // regressed — refuse the result loudly rather than present a review
+  // produced by a Kimi that was allowed to write.
+  const permissionEvents = result.permissionEvents ?? [];
+  assertReadOnlyPermissionEvents(permissionEvents);
+
   // A review that produced no schema-valid verdict is a FAILED review, even
   // when the turn itself completed: exit nonzero and record the job failed.
-  const structuralError = parsed.parseError ?? (parsed.parsed ? validateReviewResultShape(parsed.parsed) : "No structured result.");
+  // Belt over the parse layer: parsed === null is ALWAYS a structural error
+  // even if a falsy parseError ever slips through again.
+  const structuralError = parsed.parsed
+    ? validateReviewResultShape(parsed.parsed)
+    : parsed.parseError || "No structured result.";
 
   const payload = {
     review: "Review",
@@ -287,6 +299,12 @@ async function executeReviewRun(request) {
     rawOutput: parsed.rawOutput,
     parseError: parsed.parseError,
     validationError: parsed.parseError ? null : structuralError,
+    permissionRejections: permissionEvents.length,
+    permissionEvents: permissionEvents.map((event) => ({
+      decision: event.decision,
+      outcome: event.outcome?.outcome ?? null,
+      optionId: event.outcome?.optionId ?? null
+    })),
     reasoning: result.reasoning
   };
 
@@ -395,6 +413,11 @@ async function executeTaskRun(request) {
     rawOutput,
     lastAgentMessage: result.lastAgentMessage,
     touchedFiles: result.touchedFiles,
+    permissionEvents: (result.permissionEvents ?? []).map((event) => ({
+      decision: event.decision,
+      outcome: event.outcome?.outcome ?? null,
+      optionId: event.outcome?.optionId ?? null
+    })),
     reasoning: result.reasoning
   };
 

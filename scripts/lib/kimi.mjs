@@ -362,11 +362,18 @@ function structuredCandidates(rawOutput) {
 
 export function parseStructuredOutput(rawOutput, fallback = {}) {
   if (!rawOutput) {
+    // parseError must NEVER be falsy on a failed parse: an empty-string
+    // failureMessage (e.g. blank stderr) would otherwise launder a missing
+    // result into "no error" downstream.
+    const failureMessage =
+      typeof fallback.failureMessage === "string" && fallback.failureMessage.trim()
+        ? fallback.failureMessage
+        : "Kimi did not return a final structured message.";
     return {
       parsed: null,
-      parseError: fallback.failureMessage ?? "Kimi did not return a final structured message.",
-      rawOutput: rawOutput ?? "",
-      ...fallback
+      ...fallback,
+      parseError: failureMessage,
+      rawOutput: rawOutput ?? ""
     };
   }
 
@@ -376,17 +383,29 @@ export function parseStructuredOutput(rawOutput, fallback = {}) {
       // Only a JSON OBJECT can satisfy the contract; "4" or an array
       // parsing successfully must not shadow a later valid candidate.
       if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-        return { parsed, parseError: null, rawOutput, ...fallback };
+        // fallback spreads FIRST everywhere: it must never overwrite the
+        // computed parsed/parseError/rawOutput fields.
+        return { ...fallback, parsed, parseError: null, rawOutput };
       }
     } catch {}
   }
 
   return {
+    ...fallback,
     parsed: null,
     parseError: "Final message was not valid JSON (tried raw text, fenced blocks newest-first, and outermost braces).",
-    rawOutput,
-    ...fallback
+    rawOutput
   };
+}
+
+// Throws when any captured permission event was not answered under the
+// reject policy — the review path's defense-in-depth guard, kept here so it
+// is unit-testable (the CLI entrypoint cannot be imported without running).
+export function assertReadOnlyPermissionEvents(events) {
+  const granted = (events ?? []).filter((event) => event?.decision !== "reject");
+  if (granted.length > 0) {
+    throw new Error(`SECURITY: ${granted.length} permission request(s) were granted during a read-only review. This indicates a permission-policy regression; do not trust this review result.`);
+  }
 }
 
 function rethrowWithLoginHint(profile, error) {
@@ -418,6 +437,32 @@ export async function runKimiTurn(cwd, options = {}) {
   if (!availability.available) {
     throw new Error("Kimi Code CLI is not installed or not on PATH. Install it (https://github.com/MoonshotAI/kimi-code), then rerun /kimi:setup.");
   }
+
+  // Every permission decision is captured on the result and surfaced as
+  // progress: "the reject path fired" must be assertable, never inferred
+  // from the absence of writes (PLAN §5 M3). Works on both transports —
+  // direct clients fire onPermissionRequest locally, brokered clients get
+  // the broker/permission_event relay.
+  const permissionEvents = [];
+  const callerClientOptions = options.clientOptions ?? {};
+  const clientOptions = {
+    ...callerClientOptions,
+    // Composed, never replaced: a caller-supplied observer must not be able
+    // to disable event capture (the review security guard reads it).
+    onPermissionRequest: (event) => {
+      permissionEvents.push(event);
+      const title = event.params?.toolCall?.title ?? event.params?.toolCall?.kind ?? "tool request";
+      const granted = event.decision === "allow";
+      emitProgress(
+        options.onProgress,
+        `Permission ${granted ? "granted" : "REJECTED"} (${event.decision} policy): ${title}`,
+        granted ? null : "rejected"
+      );
+      try {
+        callerClientOptions.onPermissionRequest?.(event);
+      } catch {}
+    }
+  };
 
   return withKimiClient(cwd, async (client) => {
     const decision = options.write ? "allow" : "reject";
@@ -458,8 +503,8 @@ export async function runKimiTurn(cwd, options = {}) {
     }
 
     const result = await runPromptTurn(client, { sessionId, prompt, onProgress: options.onProgress });
-    return { ...result, sessionId, stderr: client.stderr ?? "" };
-  }, options.clientOptions);
+    return { ...result, sessionId, stderr: client.stderr ?? "", permissionEvents };
+  }, clientOptions);
 }
 
 // Best-effort cancel of a running turn via the live broker. Never spawns a

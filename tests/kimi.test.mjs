@@ -5,7 +5,14 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { AcpClient } from "../scripts/lib/acp-client.mjs";
 import { kimiProfile } from "../scripts/lib/agent-profile.mjs";
-import { applySessionUpdate, createTurnCapture, newSession, parseStructuredOutput, runPromptTurn } from "../scripts/lib/kimi.mjs";
+import {
+  applySessionUpdate,
+  assertReadOnlyPermissionEvents,
+  createTurnCapture,
+  newSession,
+  parseStructuredOutput,
+  runPromptTurn
+} from "../scripts/lib/kimi.mjs";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/fake-acp-agent.mjs", import.meta.url));
 
@@ -167,6 +174,31 @@ function connectTo(scenario, options = {}) {
 
   assert.match(parseStructuredOutput("no json here").parseError, /not valid JSON/);
   assert.match(parseStructuredOutput("").parseError, /did not return/);
+}
+
+// 8. The review security guard: throws on any non-reject decision (missing
+// decision fails closed too); passes on all-reject and on no events.
+{
+  assert.doesNotThrow(() => assertReadOnlyPermissionEvents([]));
+  assert.doesNotThrow(() => assertReadOnlyPermissionEvents(undefined));
+  assert.doesNotThrow(() => assertReadOnlyPermissionEvents([{ decision: "reject" }, { decision: "reject" }]));
+  assert.throws(() => assertReadOnlyPermissionEvents([{ decision: "allow" }]), /SECURITY/);
+  assert.throws(() => assertReadOnlyPermissionEvents([{ decision: "reject" }, { decision: "allow" }]), /SECURITY/);
+  assert.throws(() => assertReadOnlyPermissionEvents([{}]), /SECURITY/);
+  assert.throws(() => assertReadOnlyPermissionEvents([null]), /SECURITY/);
+}
+
+// 9. parseStructuredOutput: fallback fields can never overwrite the
+// computed parse outcome (regression: a falsy fallback parseError laundered
+// a failed parse into success).
+{
+  assert.match(parseStructuredOutput("not json", { parseError: "" }).parseError, /not valid JSON/);
+  assert.match(parseStructuredOutput("", { failureMessage: "" }).parseError, /did not return/);
+  assert.match(parseStructuredOutput("", { failureMessage: "   " }).parseError, /did not return/);
+  const ok = parseStructuredOutput('{"a":1}', { parsed: "bogus", rawOutput: "bogus" });
+  assert.deepEqual(ok.parsed, { a: 1 });
+  assert.equal(ok.rawOutput, '{"a":1}');
+  assert.equal(ok.parseError, null);
 }
 
 console.log("KIMI-TESTS-GREEN");
