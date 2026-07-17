@@ -1,37 +1,17 @@
 ---
-description: Check whether the local Codex CLI is ready and optionally toggle the stop-time review gate
+description: Toggle the stop-time review gate (full setup probes land with KMP-12)
 argument-hint: '[--enable-review-gate|--disable-review-gate]'
-allowed-tools: Bash(node:*), Bash(npm:*), AskUserQuestion
+allowed-tools: Bash(node:*)
 ---
 
 Run:
 
 ```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --json $ARGUMENTS
+node "${CLAUDE_PLUGIN_ROOT}/scripts/kimi-companion.mjs" setup $ARGUMENTS
 ```
 
-If the result says Codex is unavailable and npm is available:
-- Use `AskUserQuestion` exactly once to ask whether Claude should install Codex now.
-- Put the install option first and suffix it with `(Recommended)`.
-- Use these two options:
-  - `Install Codex (Recommended)`
-  - `Skip for now`
-- If the user chooses install, run:
+Present the command output to the user verbatim.
 
-```bash
-npm install -g @openai/codex
-```
-
-- Then rerun:
-
-```bash
-node "${CLAUDE_PLUGIN_ROOT}/scripts/codex-companion.mjs" setup --json $ARGUMENTS
-```
-
-If Codex is already installed or npm is unavailable:
-- Do not ask about installation.
-
-Output rules:
-- Present the final setup output to the user.
-- If installation was skipped, present the original setup output.
-- If Codex is installed but not authenticated, preserve the guidance to run `!codex login`.
+Notes:
+- Only the review-gate toggles work today; the install/login/runtime probes are a later work item (KMP-12). If the command reports that, relay it and suggest checking `kimi --version` and running `kimi login` in a terminal manually.
+- Do not attempt to install anything on the user's behalf.

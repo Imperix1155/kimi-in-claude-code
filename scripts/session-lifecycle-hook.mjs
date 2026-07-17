@@ -13,7 +13,7 @@ import {
   sendBrokerShutdown,
   teardownBrokerSession
 } from "./lib/broker-lifecycle.mjs";
-import { loadState, resolveStateFile, saveState } from "./lib/state.mjs";
+import { listJobs, resolveStateFile, updateState } from "./lib/state.mjs";
 import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 
 export const SESSION_ID_ENV = "KIMI_COMPANION_SESSION_ID";
@@ -49,13 +49,13 @@ function cleanupSessionJobs(cwd, sessionId) {
     return;
   }
 
-  const state = loadState(workspaceRoot);
-  const removedJobs = state.jobs.filter((job) => job.sessionId === sessionId);
-  if (removedJobs.length === 0) {
-    return;
-  }
-
-  for (const job of removedJobs) {
+  // Kill workers outside the lock, but mutate state via updateState so a
+  // stale snapshot can never overwrite another session's concurrent jobs
+  // or config changes.
+  for (const job of listJobs(workspaceRoot)) {
+    if (job.sessionId !== sessionId) {
+      continue;
+    }
     const stillRunning = job.status === "queued" || job.status === "running";
     if (!stillRunning) {
       continue;
@@ -67,10 +67,22 @@ function cleanupSessionJobs(cwd, sessionId) {
     }
   }
 
-  saveState(workspaceRoot, {
-    ...state,
-    jobs: state.jobs.filter((job) => job.sessionId !== sessionId)
+  updateState(workspaceRoot, (state) => {
+    state.jobs = state.jobs.filter((job) => job.sessionId !== sessionId);
   });
+}
+
+// A workspace broker is SHARED: if any other session still has active jobs,
+// this session's end must not tear it down under them. Idle sessions losing
+// the broker is fine — the next call respawns it and sessions persist.
+function otherSessionsActive(cwd, sessionId) {
+  if (!cwd) {
+    return false;
+  }
+  const workspaceRoot = resolveWorkspaceRoot(cwd);
+  return listJobs(workspaceRoot).some(
+    (job) => (job.status === "queued" || job.status === "running") && job.sessionId !== sessionId
+  );
 }
 
 function handleSessionStart(input) {
@@ -80,6 +92,15 @@ function handleSessionStart(input) {
 
 async function handleSessionEnd(input) {
   const cwd = input.cwd || process.cwd();
+  const sessionId = input.session_id || process.env[SESSION_ID_ENV];
+  cleanupSessionJobs(cwd, sessionId);
+
+  if (otherSessionsActive(cwd, sessionId)) {
+    // Another session's work is mid-flight on the shared broker: leave the
+    // runtime alone; only this session's jobs were cleaned up.
+    return;
+  }
+
   const brokerSession =
     loadBrokerSession(cwd) ??
     (process.env[BROKER_ENDPOINT_ENV]
@@ -99,7 +120,6 @@ async function handleSessionEnd(input) {
     await sendBrokerShutdown(brokerEndpoint);
   }
 
-  cleanupSessionJobs(cwd, input.session_id || process.env[SESSION_ID_ENV]);
   teardownBrokerSession({
     endpoint: brokerEndpoint,
     pidFile,

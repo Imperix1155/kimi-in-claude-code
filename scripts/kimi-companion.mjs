@@ -26,7 +26,7 @@ import {
 } from "./lib/kimi.mjs";
 import { interpolateTemplate, loadPromptTemplate } from "./lib/prompts.mjs";
 import { terminateProcessTree } from "./lib/process.mjs";
-import { generateJobId, listJobs, upsertJob, writeJobFile } from "./lib/state.mjs";
+import { generateJobId, listJobs, setConfig, upsertJob, writeJobFile } from "./lib/state.mjs";
 import {
   buildSingleJobSnapshot,
   buildStatusSnapshot,
@@ -634,6 +634,31 @@ async function handleTaskWorker(argv) {
   );
 }
 
+// Only the review-gate toggles for now — the install/login/runtime probes
+// land with KMP-12.
+function handleSetup(argv) {
+  const { options } = parseCommandInput(argv, {
+    valueOptions: ["cwd"],
+    booleanOptions: ["json", "enable-review-gate", "disable-review-gate"]
+  });
+
+  if (options["enable-review-gate"] && options["disable-review-gate"]) {
+    throw new Error("Choose either --enable-review-gate or --disable-review-gate.");
+  }
+  if (!options["enable-review-gate"] && !options["disable-review-gate"]) {
+    throw new Error("`setup` probes are not implemented yet (lands with KMP-12). Available now: --enable-review-gate / --disable-review-gate. Meanwhile: check `kimi --version` and run `kimi login` in a terminal.");
+  }
+
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const enabled = Boolean(options["enable-review-gate"]);
+  setConfig(workspaceRoot, "stopReviewGate", enabled);
+  outputCommandResult(
+    { stopReviewGate: enabled, workspaceRoot },
+    `Stop-time review gate ${enabled ? "enabled" : "disabled"} for ${workspaceRoot}.\n`,
+    options.json
+  );
+}
+
 async function handleStatus(argv) {
   const { options, positionals } = parseCommandInput(argv, {
     valueOptions: ["cwd", "timeout-ms", "poll-interval-ms"],
@@ -813,7 +838,8 @@ async function main() {
       await handleReview(argv);
       break;
     case "setup":
-      throw new Error("`setup` is not implemented yet (lands with KMP-12). Meanwhile: check `kimi --version` and run `kimi login` in a terminal.");
+      handleSetup(argv);
+      break;
     default:
       throw new Error(`Unknown subcommand: ${subcommand}`);
   }

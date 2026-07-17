@@ -178,6 +178,22 @@ rl.on("line", (line) => {
       return;
     }
 
+    if (scenario === "stop-gate-allow" || scenario === "stop-gate-block") {
+      // Self-checking: the prompt must have survived stdin intact WITH the
+      // inlined repo-state boundary. A mangled or context-less prompt turns
+      // an expected ALLOW into a BLOCK the tests will catch.
+      const promptText = (message.params.prompt ?? []).map((block) => block?.text ?? "").join("");
+      const hasContext = promptText.includes("BEGIN-REPO-STATE-") && promptText.includes("END-REPO-STATE-");
+      const text = !hasContext
+        ? "BLOCK: prompt arrived without the inlined repository state."
+        : scenario === "stop-gate-allow"
+          ? "ALLOW: previous turn made no code changes."
+          : "BLOCK: the planted bug from the previous turn is still unfixed.";
+      send({ method: "session/update", params: { sessionId: message.params.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } } });
+      send({ id: message.id, result: { stopReason: "end_turn" } });
+      return;
+    }
+
     if (scenario === "review-empty") {
       // Turn ends with NO message at all — must be a failed review, not a
       // silent success (live-caught: empty stderr laundered the parse error).

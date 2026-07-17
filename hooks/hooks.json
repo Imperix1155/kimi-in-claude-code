@@ -1,5 +1,5 @@
 {
-  "description": "Optional stop-time review gate for Codex Companion.",
+  "description": "Kimi companion lifecycle hooks and the optional stop-time review gate.",
   "hooks": {
     "SessionStart": [
       {
