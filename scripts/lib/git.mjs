@@ -5,6 +5,7 @@ import { isProbablyText } from "./fs.mjs";
 import { formatCommandFailure, runCommand, runCommandChecked } from "./process.mjs";
 
 const MAX_UNTRACKED_BYTES = 24 * 1024;
+const MAX_UNTRACKED_TOTAL_BYTES = 256 * 1024;
 const DEFAULT_INLINE_DIFF_MAX_FILES = 2;
 const DEFAULT_INLINE_DIFF_MAX_BYTES = 256 * 1024;
 
@@ -193,32 +194,68 @@ function formatSection(title, body) {
   return [`## ${title}`, "", body.trim() ? body.trim() : "(none)", ""].join("\n");
 }
 
-function formatUntrackedFile(cwd, relativePath) {
+function formatUntrackedFile(cwd, relativePath, remainingBytes = Infinity) {
   const absolutePath = path.join(cwd, relativePath);
   let stat;
   try {
     stat = fs.statSync(absolutePath);
   } catch {
-    return `### ${relativePath}\n(skipped: broken symlink or unreadable file)`;
+    return { text: `### ${relativePath}\n(skipped: broken symlink or unreadable file)`, bytes: 0 };
   }
   if (stat.isDirectory()) {
-    return `### ${relativePath}\n(skipped: directory)`;
+    return { text: `### ${relativePath}\n(skipped: directory)`, bytes: 0 };
   }
   if (stat.size > MAX_UNTRACKED_BYTES) {
-    return `### ${relativePath}\n(skipped: ${stat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit)`;
+    return { text: `### ${relativePath}\n(skipped: ${stat.size} bytes exceeds ${MAX_UNTRACKED_BYTES} byte limit)`, bytes: 0 };
+  }
+  if (stat.size > remainingBytes) {
+    return { text: `### ${relativePath}\n(skipped: aggregate untracked content limit reached)`, bytes: 0 };
   }
 
   let buffer;
   try {
     buffer = fs.readFileSync(absolutePath);
   } catch {
-    return `### ${relativePath}\n(skipped: broken symlink or unreadable file)`;
+    return { text: `### ${relativePath}\n(skipped: broken symlink or unreadable file)`, bytes: 0 };
   }
   if (!isProbablyText(buffer)) {
-    return `### ${relativePath}\n(skipped: binary file)`;
+    return { text: `### ${relativePath}\n(skipped: binary file)`, bytes: 0 };
   }
 
-  return [`### ${relativePath}`, "```", buffer.toString("utf8").trimEnd(), "```"].join("\n");
+  return {
+    text: [`### ${relativePath}`, "```", buffer.toString("utf8").trimEnd(), "```"].join("\n"),
+    bytes: buffer.length
+  };
+}
+
+// Embeds untracked files under an aggregate ceiling so thousands of small
+// files cannot balloon the prompt.
+function formatUntrackedFiles(cwd, untracked) {
+  let remaining = MAX_UNTRACKED_TOTAL_BYTES;
+  const parts = [];
+  for (const file of untracked) {
+    const formatted = formatUntrackedFile(cwd, file, remaining);
+    parts.push(formatted.text);
+    remaining -= formatted.bytes;
+  }
+  return parts.join("\n\n");
+}
+
+// Untracked files ARE review input: their sizes must count toward the
+// inline-vs-self-collect decision, or a single large new file silently
+// becomes a "(skipped)" stub while the guidance still claims the inline
+// context is primary evidence.
+export function measureUntrackedBytes(cwd, untracked) {
+  let total = 0;
+  for (const file of untracked) {
+    try {
+      const stat = fs.statSync(path.join(cwd, file));
+      if (stat.isFile()) {
+        total += stat.size;
+      }
+    } catch {}
+  }
+  return total;
 }
 
 function collectWorkingTreeContext(cwd, state, options = {}) {
@@ -230,7 +267,7 @@ function collectWorkingTreeContext(cwd, state, options = {}) {
   if (includeDiff) {
     const stagedDiff = gitChecked(cwd, ["diff", "--cached", "--binary", "--no-ext-diff", "--submodule=diff"]).stdout;
     const unstagedDiff = gitChecked(cwd, ["diff", "--binary", "--no-ext-diff", "--submodule=diff"]).stdout;
-    const untrackedBody = state.untracked.map((file) => formatUntrackedFile(cwd, file)).join("\n\n");
+    const untrackedBody = formatUntrackedFiles(cwd, state.untracked);
     parts = [
       formatSection("Git Status", status),
       formatSection("Staged Diff", stagedDiff),
@@ -240,7 +277,7 @@ function collectWorkingTreeContext(cwd, state, options = {}) {
   } else {
     const stagedStat = gitChecked(cwd, ["diff", "--shortstat", "--cached"]).stdout.trim();
     const unstagedStat = gitChecked(cwd, ["diff", "--shortstat"]).stdout.trim();
-    const untrackedBody = state.untracked.map((file) => formatUntrackedFile(cwd, file)).join("\n\n");
+    const untrackedBody = formatUntrackedFiles(cwd, state.untracked);
     parts = [
       formatSection("Git Status", status),
       formatSection("Staged Diff Stat", stagedStat),
@@ -315,6 +352,7 @@ export function collectReviewContext(cwd, target, options = {}) {
       ],
       maxInlineDiffBytes
     );
+    diffBytes += measureUntrackedBytes(repoRoot, state.untracked);
     includeDiff =
       options.includeDiff ??
       (listUniqueFiles(state.staged, state.unstaged, state.untracked).length <= maxInlineFiles &&

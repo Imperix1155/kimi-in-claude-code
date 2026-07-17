@@ -21,7 +21,7 @@
 
 ## Epic 2 — Review (= milestone M3)
 
-- [ ] **KMP-8** `/kimi:review` — prompt-driven review command (wait/background flow ported from codex plugin). _(PLAN §4 bucket 2)_
+- [x] **KMP-8** ✅ 2026-07-17 — `/kimi:review`: prompt-driven adversarial review (single command; codex's native/adversarial split dropped). Review context via git.mjs (repoRoot normalized first — subdir invocation bug from Codex review fixed; untracked bytes now count toward the inline decision with an aggregate embed ceiling); prompt template with embedded schema + per-run nonce boundary + untrusted-data rules (live test: planted injection in reviewed content was flagged as a finding, verdict not forged); tolerant JSON extraction (last fence wins, objects only); STRICT schema-shape validation — parse/shape failure = failed review, exit 1. `--model` wired (task+review): mechanism `session/set_model` verified live; wire ids prefixed `kimi-code/`, k3 1M-context tier discovered and added; aliases highspeed/k3; review defaults to the thinking model (PLAN §6 decision made). Codex review applied (2 High: subdir target selection, injection boundary; 3 Medium: schema enforcement/exit codes, candidate ordering, untracked accounting). Verified: companion suite 16 scenarios + parse-unit tests + live seeded-bug review (found the bug + 3 legit extra findings) + live injection test. Permission-reject assertion → KMP-9 (next). _(PLAN §4 bucket 2)_
 - [ ] **KMP-9** Permission-reject enforcement for reviews + test that ASSERTS the reject path fires. _(PLAN §5 M3, §7 risk 1)_
 - [ ] **KMP-10** Review output → `review-output.schema.json` validation; optional Stop-hook review gate. _(PLAN §5 M3)_
 - [ ] **GATE M3**: seeded-bug review finds the bug; write attempt rejected (assert fired); schema validates. _(PLAN §5)_
@@ -31,6 +31,7 @@
 - [ ] **KMP-11** `/kimi:task` write-enabled delegation (auto-approve permission policy). _(PLAN §6)_
 - [ ] **KMP-12** `/kimi:setup` — probes: not installed / logged out / ready. _(PLAN §5 M4)_
 - [ ] **KMP-13** Rescue agent + runtime/result-handling skills. _(PLAN §3)_
+- [ ] **KMP-21** Render hardening: escape/bound hostile finding values in `render.mjs` (markdown injection into rendered review output, embedded closing fences in raw-output blocks, unbounded body sizes). Low severity, upstream-parity gap — from Codex review of KMP-8, 2026-07-17.
 - [ ] **GATE M4**: delegated task edits scratch repo + reports diff; setup reports all three states correctly. _(PLAN §5)_
 
 ## Epic 4 — Open-source release

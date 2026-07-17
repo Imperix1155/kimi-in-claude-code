@@ -12,7 +12,7 @@ Status: **M1 proven live** (2026-07-15). Feasibility is closed; what remains is 
 - Full loop proven by `spike/acp-spike.mjs`: `initialize` → `session/new` → `session/prompt` → streamed response → `stopReason: end_turn` → **SPIKE-GREEN**.
 - Auth: `session/new` returns error `-32000 Authentication required` when logged out; fixed by user running `kimi login` in a terminal.
 - Session capabilities advertised: `loadSession: true`, `sessionCapabilities: { list, resume }` — the persistent-thread/resume model the broker architecture needs exists. Exact resume semantics unverified (M2 item).
-- Models are selectable per session: `kimi-for-coding` and `kimi-for-coding-highspeed`, each with a `,thinking` variant. Default: `kimi-for-coding,thinking`.
+- Models are selectable per session via `session/set_model { sessionId, modelId }` (verified live 2026-07-17; requires the EXACT prefixed wire id, unprefixed names get -32602). Wire ids from `session/new`'s `models.availableModels`: `kimi-code/kimi-for-coding`, `kimi-code/kimi-for-coding-highspeed`, and `kimi-code/k3` (1M-context tier, discovered by the probe — not in original M1 evidence), each with a `,thinking` variant. Default: `kimi-code/kimi-for-coding,thinking`.
 - Streaming separates reasoning from answer: `agent_thought_chunk` vs `agent_message_chunk` — maps directly to the codex plugin's `reasoningSummary` / `lastAgentMessage` capture.
 - Only one session mode (`default`) exists — **no native read-only sandbox** (unlike Codex's `sandbox: "read-only"`). Enforcement lives client-side: our handler answers `session/request_permission` (reject for reviews, allow for tasks).
 - No native review RPC (Codex has one). `/kimi:review` is prompt-driven review.
@@ -105,9 +105,9 @@ Build order is strict: each milestone's gate must print green before the next st
 - Review mode = auto-reject all permission requests. Task mode = auto-approve (equivalent to Kimi's YOLO; acceptable because Claude Code's own permission layer still gates the outer session).
 - `k2-prompting` skill deferred past M4 — the codex `gpt-5-4-prompting` skill is model-specific and doesn't port; ship v1 without it.
 
-**Open (decide during build):**
-- Whether `/kimi:review` defaults to `highspeed` model (cheap/fast) with `thinking` for an adversarial variant.
-- Resume vs `session/load` for thread continuation — pick whichever the live binary honors (M2).
+**Decided during build:**
+- `/kimi:review` defaults to the standard thinking model (quality first); `--model highspeed` is the cheap/fast pass, `--model k3` the 1M-context whole-repo tier (decided 2026-07-17 with KMP-8; aliases live in the agent profile).
+- Thread continuation uses `session/load` — verified live 2026-07-17: context survives new broker sockets AND fresh agent processes (KMP-7).
 
 ## 7. Risks
 

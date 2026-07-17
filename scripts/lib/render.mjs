@@ -21,12 +21,18 @@ function formatLineRange(finding) {
   return `:${finding.line_start}-${finding.line_end}`;
 }
 
-function validateReviewResultShape(data) {
+const VALID_VERDICTS = new Set(["approve", "needs-attention"]);
+const VALID_SEVERITIES = new Set(["critical", "high", "medium", "low"]);
+
+// Strict schema-shape validation (exported: the review command fails the job
+// on a nonnull result). Kept in sync with schemas/review-output.schema.json;
+// unknown extra properties are tolerated.
+export function validateReviewResultShape(data) {
   if (!data || typeof data !== "object" || Array.isArray(data)) {
     return "Expected a top-level JSON object.";
   }
-  if (typeof data.verdict !== "string" || !data.verdict.trim()) {
-    return "Missing string `verdict`.";
+  if (typeof data.verdict !== "string" || !VALID_VERDICTS.has(data.verdict.trim())) {
+    return `Invalid verdict ${JSON.stringify(data.verdict)}; expected "approve" or "needs-attention".`;
   }
   if (typeof data.summary !== "string" || !data.summary.trim()) {
     return "Missing string `summary`.";
@@ -34,8 +40,33 @@ function validateReviewResultShape(data) {
   if (!Array.isArray(data.findings)) {
     return "Missing array `findings`.";
   }
-  if (!Array.isArray(data.next_steps)) {
-    return "Missing array `next_steps`.";
+  for (const [index, finding] of data.findings.entries()) {
+    if (!finding || typeof finding !== "object" || Array.isArray(finding)) {
+      return `Finding ${index + 1} is not an object.`;
+    }
+    if (typeof finding.severity !== "string" || !VALID_SEVERITIES.has(finding.severity)) {
+      return `Finding ${index + 1} has invalid severity ${JSON.stringify(finding.severity)}.`;
+    }
+    for (const key of ["title", "body", "file"]) {
+      if (typeof finding[key] !== "string" || !finding[key].trim()) {
+        return `Finding ${index + 1} is missing string \`${key}\`.`;
+      }
+    }
+    if (!Number.isInteger(finding.line_start) || finding.line_start < 1) {
+      return `Finding ${index + 1} has invalid \`line_start\`.`;
+    }
+    if (!Number.isInteger(finding.line_end) || finding.line_end < 1) {
+      return `Finding ${index + 1} has invalid \`line_end\`.`;
+    }
+    if (typeof finding.confidence !== "number" || finding.confidence < 0 || finding.confidence > 1) {
+      return `Finding ${index + 1} has invalid \`confidence\`.`;
+    }
+    if (typeof finding.recommendation !== "string") {
+      return `Finding ${index + 1} is missing string \`recommendation\`.`;
+    }
+  }
+  if (!Array.isArray(data.next_steps) || !data.next_steps.every((step) => typeof step === "string" && step.trim())) {
+    return "`next_steps` must be an array of non-empty strings.";
   }
   return null;
 }

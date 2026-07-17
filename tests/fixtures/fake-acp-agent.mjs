@@ -76,6 +76,12 @@ rl.on("line", (line) => {
     return;
   }
 
+  if (message.method === "session/set_model") {
+    observed.modelId = message.params?.modelId ?? null;
+    send({ id: message.id, result: {} });
+    return;
+  }
+
   if (message.method === "session/new") {
     if (scenario === "auth-error") {
       send({ id: message.id, error: { code: -32000, message: "Authentication required" } });
@@ -138,6 +144,50 @@ rl.on("line", (line) => {
     if (scenario === "resume-check") {
       const text = observed.wasLoaded ? "resumed-session" : "fresh-session";
       send({ method: "session/update", params: { sessionId: message.params.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } } });
+      send({ id: message.id, result: { stopReason: "end_turn" } });
+      return;
+    }
+
+    if (scenario === "model-check") {
+      const text = `model:${observed.modelId ?? "default"}`;
+      send({ method: "session/update", params: { sessionId: message.params.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } } });
+      send({ id: message.id, result: { stopReason: "end_turn" } });
+      return;
+    }
+
+    if (scenario === "review-json") {
+      const review = {
+        verdict: "needs-attention",
+        summary: "Ship blocker: planted divide-by-zero found.",
+        findings: [{
+          severity: "high",
+          title: "Planted divide-by-zero",
+          body: "compute() divides by a divisor that can be zero.",
+          file: "src/buggy.mjs",
+          line_start: 2,
+          line_end: 3,
+          confidence: 0.9,
+          recommendation: "Guard the divisor before dividing."
+        }],
+        next_steps: ["Add a zero-divisor guard."]
+      };
+      // Fenced on purpose: exercises tolerant JSON extraction.
+      const text = "Here is my review:\n```json\n" + JSON.stringify(review, null, 2) + "\n```";
+      send({ method: "session/update", params: { sessionId: message.params.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } } });
+      send({ id: message.id, result: { stopReason: "end_turn" } });
+      return;
+    }
+
+    if (scenario === "review-bad-json") {
+      send({ method: "session/update", params: { sessionId: message.params.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "I could not produce structured output, sorry." } } } });
+      send({ id: message.id, result: { stopReason: "end_turn" } });
+      return;
+    }
+
+    if (scenario === "review-invalid-schema") {
+      // Valid JSON, invalid shape: verdict outside the schema enum.
+      const bogus = { verdict: "ship-it", summary: "Looks fine to me.", findings: [], next_steps: [] };
+      send({ method: "session/update", params: { sessionId: message.params.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: JSON.stringify(bogus) } } } });
       send({ id: message.id, result: { stopReason: "end_turn" } });
       return;
     }

@@ -35,23 +35,31 @@ export const kimiProfile = {
     loginInstructions: "Run `kimi login` in a terminal, then retry."
   },
 
+  // Wire model ids verified live 2026-07-17 against kimi v1.48.0: they come
+  // prefixed in session/new's models.availableModels, and the selection
+  // mechanism is session/set_model { sessionId, modelId } which requires
+  // these EXACT ids (unprefixed names get -32602). k3 is the 1M-context
+  // tier — not in the original PLAN evidence, discovered by the same probe.
   models: {
-    default: "kimi-for-coding,thinking",
+    default: "kimi-code/kimi-for-coding,thinking",
     catalog: [
-      "kimi-for-coding",
-      "kimi-for-coding,thinking",
-      "kimi-for-coding-highspeed",
-      "kimi-for-coding-highspeed,thinking"
+      "kimi-code/kimi-for-coding",
+      "kimi-code/kimi-for-coding,thinking",
+      "kimi-code/kimi-for-coding-highspeed",
+      "kimi-code/kimi-for-coding-highspeed,thinking",
+      "kimi-code/k3",
+      "kimi-code/k3,thinking"
     ],
-    // Values the planned --model flag accepts (PLAN §4 bucket 2) resolve
-    // here, so the engine never learns agent-specific model names.
+    // The --model flag accepts these, so the engine never learns
+    // agent-specific model names.
     aliases: {
-      highspeed: "kimi-for-coding-highspeed,thinking"
+      highspeed: "kimi-code/kimi-for-coding-highspeed,thinking",
+      k3: "kimi-code/k3,thinking"
     }
   },
 
-  // Exact catalog id or alias -> model id; null means unknown (caller
-  // should error with the catalog). Empty/absent -> the default model.
+  // Exact wire id, alias, or unprefixed catalog name -> wire id; null means
+  // unknown (caller should error with the catalog). Empty/absent -> default.
   resolveModel(nameOrAlias) {
     if (nameOrAlias == null || nameOrAlias === "") {
       return this.models.default;
@@ -59,7 +67,15 @@ export const kimiProfile = {
     if (this.models.catalog.includes(nameOrAlias)) {
       return nameOrAlias;
     }
-    return this.models.aliases[nameOrAlias] ?? null;
+    const alias = this.models.aliases[nameOrAlias];
+    if (alias) {
+      return alias;
+    }
+    const prefixed = `kimi-code/${nameOrAlias}`;
+    if (this.models.catalog.includes(prefixed)) {
+      return prefixed;
+    }
+    return null;
   },
 
   // Map an allow/reject decision onto the agent's offered permission options.

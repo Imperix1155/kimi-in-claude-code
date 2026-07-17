@@ -324,6 +324,71 @@ export function isBrokerBusyError(error) {
   return error?.code === BROKER_BUSY_RPC_CODE;
 }
 
+// Resolves a user-supplied model name/alias to the wire id, or throws with
+// the full menu. null/empty input means "agent default" and returns null so
+// callers skip session/set_model entirely.
+export function resolveRequestedModel(nameOrAlias) {
+  if (nameOrAlias == null || String(nameOrAlias).trim() === "") {
+    return null;
+  }
+  const profile = getAgentProfile();
+  const resolved = profile.resolveModel(String(nameOrAlias).trim());
+  if (!resolved) {
+    const aliases = Object.keys(profile.models.aliases).join(", ");
+    throw new Error(`Unknown model "${nameOrAlias}". Available: ${profile.models.catalog.join(", ")} (aliases: ${aliases}).`);
+  }
+  return resolved;
+}
+
+// ACP has no native output-schema enforcement (unlike the codex app-server),
+// so structured output is prompt-demanded and parsed tolerantly: raw text,
+// then a fenced block, then the outermost brace span.
+function structuredCandidates(rawOutput) {
+  const text = String(rawOutput).trim();
+  const candidates = [text];
+  // LAST fence first: a final answer beats echoed examples or stale JSON
+  // earlier in the message (which reviewed content could even plant).
+  const fences = [...text.matchAll(/```(?:json)?\s*\n([\s\S]*?)\n```/g)];
+  for (let index = fences.length - 1; index >= 0; index -= 1) {
+    candidates.push(fences[index][1].trim());
+  }
+  const first = text.indexOf("{");
+  const last = text.lastIndexOf("}");
+  if (first !== -1 && last > first) {
+    candidates.push(text.slice(first, last + 1));
+  }
+  return candidates;
+}
+
+export function parseStructuredOutput(rawOutput, fallback = {}) {
+  if (!rawOutput) {
+    return {
+      parsed: null,
+      parseError: fallback.failureMessage ?? "Kimi did not return a final structured message.",
+      rawOutput: rawOutput ?? "",
+      ...fallback
+    };
+  }
+
+  for (const candidate of structuredCandidates(rawOutput)) {
+    try {
+      const parsed = JSON.parse(candidate);
+      // Only a JSON OBJECT can satisfy the contract; "4" or an array
+      // parsing successfully must not shadow a later valid candidate.
+      if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+        return { parsed, parseError: null, rawOutput, ...fallback };
+      }
+    } catch {}
+  }
+
+  return {
+    parsed: null,
+    parseError: "Final message was not valid JSON (tried raw text, fenced blocks newest-first, and outermost braces).",
+    rawOutput,
+    ...fallback
+  };
+}
+
 function rethrowWithLoginHint(profile, error) {
   if (isAuthRequiredError(profile, error)) {
     throw new Error(`Kimi is not logged in. ${profile.auth.loginInstructions}`);
@@ -379,6 +444,13 @@ export async function runKimiTurn(cwd, options = {}) {
     }
 
     emitProgress(options.onProgress, `Session ready (${sessionId}).`, "starting", { threadId: sessionId });
+
+    // Model selection is per session via session/set_model with an exact
+    // wire id (verified live 2026-07-17). No flag -> the agent's default.
+    if (options.model) {
+      await client.request("session/set_model", { sessionId, modelId: options.model });
+      emitProgress(options.onProgress, `Model set (${options.model}).`, "starting");
+    }
 
     const prompt = options.prompt?.trim() || options.defaultPrompt || "";
     if (!prompt) {

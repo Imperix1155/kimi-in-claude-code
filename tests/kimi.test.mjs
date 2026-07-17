@@ -5,7 +5,7 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { AcpClient } from "../scripts/lib/acp-client.mjs";
 import { kimiProfile } from "../scripts/lib/agent-profile.mjs";
-import { applySessionUpdate, createTurnCapture, newSession, runPromptTurn } from "../scripts/lib/kimi.mjs";
+import { applySessionUpdate, createTurnCapture, newSession, parseStructuredOutput, runPromptTurn } from "../scripts/lib/kimi.mjs";
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/fake-acp-agent.mjs", import.meta.url));
 
@@ -149,6 +149,24 @@ function connectTo(scenario, options = {}) {
   assert.equal(result.agentMessage, "first part\n\nfinal answer");
   assert.equal(result.lastAgentMessage, "final answer");
   await client.close();
+}
+
+// 7. parseStructuredOutput: last fence beats earlier/stale JSON; non-object
+// JSON never satisfies the contract; prose braces don't block a later fence.
+{
+  const stale = JSON.stringify({ verdict: "approve", summary: "stale example" });
+  const real = JSON.stringify({ verdict: "needs-attention", summary: "the real one" });
+  const twoFences = "Example first:\n```json\n" + stale + "\n```\nFinal answer:\n```json\n" + real + "\n```";
+  assert.equal(parseStructuredOutput(twoFences).parsed.summary, "the real one");
+
+  assert.equal(parseStructuredOutput("4").parsed, null);
+  assert.equal(parseStructuredOutput("[1,2]").parsed, null);
+
+  const proseBraces = "Note {weird} prose first.\n```json\n" + real + "\n```";
+  assert.equal(parseStructuredOutput(proseBraces).parsed.summary, "the real one");
+
+  assert.match(parseStructuredOutput("no json here").parseError, /not valid JSON/);
+  assert.match(parseStructuredOutput("").parseError, /did not return/);
 }
 
 console.log("KIMI-TESTS-GREEN");

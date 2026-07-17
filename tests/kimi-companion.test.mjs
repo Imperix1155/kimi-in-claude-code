@@ -247,13 +247,14 @@ function pathToImport(relative) {
   shutdownBroker(env, cwd);
 }
 
-// 6. Guardrails: unknown flags rejected clearly; no prompt and no resume is
-// an error; unimplemented subcommands say which item ships them.
+// 6. Guardrails: bogus model rejected with the menu; no prompt and no
+// resume is an error; unimplemented subcommands say which item ships them.
 {
   const { cwd, env } = makeWorkspace("basic");
-  const model = runCli(["task", "--model", "highspeed", "x"], { env, cwd });
+  const model = runCli(["task", "--model", "gpt-4", "x"], { env, cwd });
   assert.notEqual(model.status, 0);
-  assert.match(model.stderr, /not wired yet/);
+  assert.match(model.stderr, /Unknown model "gpt-4"/);
+  assert.match(model.stderr, /highspeed/);
 
   const empty = runCli(["task"], { env, cwd });
   assert.notEqual(empty.status, 0);
@@ -262,6 +263,23 @@ function pathToImport(relative) {
   const setup = runCli(["setup"], { env, cwd });
   assert.notEqual(setup.status, 0);
   assert.match(setup.stderr, /KMP-12/);
+}
+
+// 6b. --model alias resolves to the wire id and reaches the agent via
+// session/set_model (fixture echoes what it received).
+{
+  const { cwd, env } = makeWorkspace("model-check");
+  const aliased = runCli(["task", "--model", "highspeed", "x"], { env, cwd });
+  assert.equal(aliased.status, 0, `model task failed: ${aliased.stderr}`);
+  assert.match(aliased.stdout, /model:kimi-code\/kimi-for-coding-highspeed,thinking/);
+  shutdownBroker(env, cwd);
+}
+{
+  const { cwd, env } = makeWorkspace("model-check");
+  const noFlag = runCli(["task", "x"], { env, cwd });
+  assert.equal(noFlag.status, 0);
+  assert.match(noFlag.stdout, /model:default/);
+  shutdownBroker(env, cwd);
 }
 
 // 7. --write end to end: the allow policy reaches the session the task runs
@@ -330,6 +348,74 @@ function pathToImport(relative) {
   const finalStatus = runCli(["status", running.id, "--json"], { env, cwd });
   assert.equal(JSON.parse(finalStatus.stdout).job.status, "cancelled");
   shutdownBroker(env, cwd);
+}
+
+// 10. Review end to end: git context collected, prompt-driven review runs
+// read-only, fenced JSON tolerated, findings rendered, job recorded.
+function makeGitWorkspace(scenario) {
+  const ws = makeWorkspace(scenario);
+  spawnSync("git", ["init", "-q"], { cwd: ws.cwd, encoding: "utf8" });
+  fs.mkdirSync(path.join(ws.cwd, "src"), { recursive: true });
+  fs.writeFileSync(path.join(ws.cwd, "src", "buggy.mjs"), "export function compute(total, divisor) {\n  return total / divisor;\n}\n");
+  return ws;
+}
+{
+  const { cwd, env } = makeGitWorkspace("review-json");
+  const review = runCli(["review", "--wait", "check the math"], { env, cwd });
+  assert.equal(review.status, 0, `review failed: ${review.stderr}`);
+  assert.match(review.stdout, /# Kimi Review/);
+  assert.match(review.stdout, /Verdict: needs-attention/);
+  assert.match(review.stdout, /Planted divide-by-zero/);
+  assert.match(review.stdout, /Guard the divisor/);
+
+  const status = runCli(["status", "--json", "--all"], { env, cwd });
+  const report = JSON.parse(status.stdout);
+  assert.equal(report.latestFinished.kindLabel, "review");
+  assert.equal(report.latestFinished.status, "completed");
+  shutdownBroker(env, cwd);
+}
+
+// 11. Review with unparseable output is a FAILED review: parse error and
+// raw message surfaced, nonzero exit, job recorded failed.
+{
+  const { cwd, env } = makeGitWorkspace("review-bad-json");
+  const review = runCli(["review", "--wait"], { env, cwd });
+  assert.notEqual(review.status, 0, "structurally failed review must exit nonzero");
+  assert.match(review.stdout, /did not return valid structured JSON/i);
+  assert.match(review.stdout, /could not produce structured output/);
+  const status = runCli(["status", "--json", "--all"], { env, cwd });
+  assert.equal(JSON.parse(status.stdout).latestFinished.status, "failed");
+  shutdownBroker(env, cwd);
+}
+
+// 11b. Schema-invalid JSON (verdict outside the enum) also fails the review.
+{
+  const { cwd, env } = makeGitWorkspace("review-invalid-schema");
+  const review = runCli(["review", "--wait"], { env, cwd });
+  assert.notEqual(review.status, 0);
+  assert.match(review.stdout, /unexpected review shape/i);
+  assert.match(review.stdout, /Invalid verdict/);
+  shutdownBroker(env, cwd);
+}
+
+// 11c. Review invoked from a SUBDIRECTORY still targets the whole repo: the
+// only change is a root-level untracked file, which must select
+// working-tree scope (branch scope would fail in this commitless repo).
+{
+  const { cwd, env } = makeGitWorkspace("review-json");
+  const subdir = path.join(cwd, "src");
+  const review = runCli(["review", "--wait"], { env, cwd: subdir });
+  assert.equal(review.status, 0, `subdir review failed: ${review.stderr}`);
+  assert.match(review.stdout, /Target: working tree diff/);
+  shutdownBroker(env, cwd);
+}
+
+// 12. Review outside a git repository fails with a clear message.
+{
+  const { cwd, env } = makeWorkspace("review-json");
+  const review = runCli(["review", "--wait"], { env, cwd });
+  assert.notEqual(review.status, 0);
+  assert.match(review.stderr + review.stdout, /Git repository/i);
 }
 
 // Final leak sweep: the suite itself fails if any scenario left a broker or

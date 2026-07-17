@@ -5,6 +5,7 @@
 // setup (KMP-12) and review (KMP-8) land with their own work items.
 
 import { spawn } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
@@ -12,13 +13,17 @@ import { fileURLToPath } from "node:url";
 
 import { parseArgs, splitRawArgumentString } from "./lib/args.mjs";
 import { readStdinIfPiped } from "./lib/fs.mjs";
+import { collectReviewContext, ensureGitRepository, resolveReviewTarget } from "./lib/git.mjs";
 import {
   cancelKimiSession,
   DEFAULT_CONTINUE_PROMPT,
   getKimiAvailability,
   isBrokerBusyError,
+  parseStructuredOutput,
+  resolveRequestedModel,
   runKimiTurn
 } from "./lib/kimi.mjs";
+import { interpolateTemplate, loadPromptTemplate } from "./lib/prompts.mjs";
 import { terminateProcessTree } from "./lib/process.mjs";
 import { generateJobId, listJobs, upsertJob, writeJobFile } from "./lib/state.mjs";
 import {
@@ -43,12 +48,16 @@ import { resolveWorkspaceRoot } from "./lib/workspace.mjs";
 import {
   renderCancelReport,
   renderJobStatusReport,
+  renderReviewResult,
   renderStatusReport,
   renderStoredJobResult,
-  renderTaskResult
+  renderTaskResult,
+  validateReviewResultShape
 } from "./lib/render.mjs";
 
 const SCRIPT_PATH = fileURLToPath(import.meta.url);
+const ROOT_DIR = path.resolve(fileURLToPath(new URL("..", import.meta.url)));
+const REVIEW_SCHEMA_PATH = path.join(ROOT_DIR, "schemas", "review-output.schema.json");
 const DEFAULT_STATUS_WAIT_TIMEOUT_MS = 240000;
 const DEFAULT_STATUS_POLL_INTERVAL_MS = 2000;
 // Keep this marker text identical to the one the stop-review-gate hook
@@ -59,14 +68,15 @@ function printUsage() {
   console.log(
     [
       "Usage:",
-      "  node scripts/kimi-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--prompt-file <path>] [prompt]",
+      "  node scripts/kimi-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <id|highspeed|k3>] [focus text]",
+      "  node scripts/kimi-companion.mjs task [--background] [--write] [--resume-last|--resume|--fresh] [--model <id|highspeed|k3>] [--prompt-file <path>] [prompt]",
       "  node scripts/kimi-companion.mjs status [job-id] [--all] [--wait] [--json]",
       "  node scripts/kimi-companion.mjs result [job-id] [--json]",
       "  node scripts/kimi-companion.mjs cancel [job-id] [--json]",
       "",
       "A single quoted prompt argument is re-tokenized (slash-command calling",
       "convention); pass exact text via --prompt-file or piped stdin.",
-      "Not yet available: setup (KMP-12), review (KMP-8)."
+      "Not yet available: setup (KMP-12)."
     ].join("\n")
   );
 }
@@ -202,6 +212,145 @@ async function waitForSingleJobSnapshot(cwd, reference, options = {}) {
   };
 }
 
+function buildReviewPrompt(context, focusText) {
+  const template = loadPromptTemplate(ROOT_DIR, "review");
+  // Fresh nonce per run: reviewed content cannot know it in advance, so a
+  // diff line claiming to close the repository-context block cannot match
+  // the real boundary.
+  const boundary = crypto.randomBytes(8).toString("hex");
+  return interpolateTemplate(template, {
+    TARGET_LABEL: context.target.label,
+    USER_FOCUS: focusText || "No extra focus provided.",
+    REVIEW_COLLECTION_GUIDANCE: context.collectionGuidance,
+    OUTPUT_SCHEMA: fs.readFileSync(REVIEW_SCHEMA_PATH, "utf8").trim(),
+    CONTEXT_BOUNDARY: boundary,
+    REVIEW_INPUT: context.content
+  });
+}
+
+async function executeReviewRun(request) {
+  ensureKimiAvailable(request.cwd);
+  ensureGitRepository(request.cwd);
+
+  const target = resolveReviewTarget(request.cwd, {
+    base: request.base,
+    scope: request.scope
+  });
+  const context = collectReviewContext(request.cwd, target);
+  const prompt = buildReviewPrompt(context, request.focusText ?? "");
+
+  let result;
+  try {
+    result = await runKimiTurn(context.repoRoot, {
+      prompt,
+      write: false,
+      model: request.model,
+      onProgress: request.onProgress
+    });
+  } catch (error) {
+    if (isBrokerBusyError(error)) {
+      throw new Error("The shared Kimi runtime is busy with another turn. Check /kimi:status, wait for it to finish, or /kimi:cancel <job-id> to stop it.");
+    }
+    throw error;
+  }
+
+  // The JSON contract targets the FINAL message; fall back to the full turn
+  // text when the final segment alone does not parse.
+  let parsed = parseStructuredOutput(result.lastAgentMessage, {
+    status: result.status,
+    failureMessage: result.stderr
+  });
+  if (parsed.parseError && result.agentMessage !== result.lastAgentMessage) {
+    parsed = parseStructuredOutput(result.agentMessage, {
+      status: result.status,
+      failureMessage: result.stderr
+    });
+  }
+
+  // A review that produced no schema-valid verdict is a FAILED review, even
+  // when the turn itself completed: exit nonzero and record the job failed.
+  const structuralError = parsed.parseError ?? (parsed.parsed ? validateReviewResultShape(parsed.parsed) : "No structured result.");
+
+  const payload = {
+    review: "Review",
+    target: { mode: target.mode, label: target.label },
+    status: result.status,
+    stopReason: result.stopReason,
+    sessionId: result.sessionId,
+    context: {
+      repoRoot: context.repoRoot,
+      branch: context.branch,
+      summary: context.summary,
+      inputMode: context.inputMode
+    },
+    result: parsed.parsed,
+    rawOutput: parsed.rawOutput,
+    parseError: parsed.parseError,
+    validationError: parsed.parseError ? null : structuralError,
+    reasoning: result.reasoning
+  };
+
+  return {
+    exitStatus: result.status !== 0 ? result.status : structuralError ? 1 : 0,
+    cancelled: result.stopReason === "cancelled",
+    threadId: result.sessionId,
+    turnId: null,
+    payload,
+    rendered: renderReviewResult(parsed, {
+      reviewLabel: "Review",
+      targetLabel: target.label,
+      reasoningSummary: result.reasoning ? [result.reasoning] : []
+    }),
+    summary: parsed.parsed?.summary ?? parsed.parseError ?? firstMeaningfulLine(result.lastAgentMessage, "Review finished."),
+    jobTitle: "Kimi Review",
+    jobClass: "review",
+    targetLabel: target.label
+  };
+}
+
+async function handleReview(argv) {
+  const { options, positionals } = parseCommandInput(argv, {
+    valueOptions: ["base", "scope", "model", "cwd"],
+    // --wait/--background are Claude-side execution control: the command
+    // markdown decides whether the Bash call detaches. Accepted and ignored.
+    booleanOptions: ["json", "background", "wait"],
+    aliasMap: { m: "model" }
+  });
+
+  // Normalize to the repository root BEFORE resolving the target: from a
+  // subdirectory, git only reports untracked files below the cwd, so auto
+  // scope could silently review the wrong thing (or nothing).
+  const repoRoot = ensureGitRepository(resolveCommandCwd(options));
+  const workspaceRoot = resolveWorkspaceRoot(repoRoot);
+  const model = resolveRequestedModel(options.model);
+  const focusText = positionals.join(" ").trim();
+  const target = resolveReviewTarget(repoRoot, { base: options.base, scope: options.scope });
+
+  const job = createJobRecord({
+    id: generateJobId("review"),
+    kind: "review",
+    kindLabel: "review",
+    title: "Kimi Review",
+    workspaceRoot,
+    jobClass: "review",
+    summary: `Review ${target.label}`
+  });
+
+  await runForegroundCommand(
+    job,
+    (progress) =>
+      executeReviewRun({
+        cwd: repoRoot,
+        base: options.base,
+        scope: options.scope,
+        model,
+        focusText,
+        onProgress: progress
+      }),
+    { json: options.json }
+  );
+}
+
 async function executeTaskRun(request) {
   const workspaceRoot = resolveWorkspaceRoot(request.cwd);
   ensureKimiAvailable(request.cwd);
@@ -221,6 +370,7 @@ async function executeTaskRun(request) {
       prompt: request.prompt,
       defaultPrompt: resumeSessionId ? DEFAULT_CONTINUE_PROMPT : "",
       write: request.write,
+      model: request.model ?? null,
       resumeSessionId,
       onProgress: request.onProgress
     });
@@ -384,12 +534,10 @@ async function handleTask(argv) {
     }
   });
 
-  if (options.model) {
-    throw new Error("--model is not wired yet; it lands with the review command work (KMP-8).");
-  }
   if (options.effort) {
-    throw new Error("Kimi has no reasoning-effort parameter. Thinking is part of the model variant.");
+    throw new Error("Kimi has no reasoning-effort parameter. Thinking is part of the model variant (e.g. --model highspeed vs the default thinking model).");
   }
+  const model = resolveRequestedModel(options.model);
 
   const cwd = resolveCommandCwd(options);
   const workspaceRoot = resolveCommandWorkspace(options);
@@ -415,7 +563,7 @@ async function handleTask(argv) {
     }
   }
 
-  const request = { cwd, prompt, write, resumeLast, resumeSessionId, jobId: job.id };
+  const request = { cwd, prompt, write, model, resumeLast, resumeSessionId, jobId: job.id };
 
   if (options.background) {
     ensureKimiAvailable(cwd);
@@ -638,11 +786,11 @@ async function main() {
     case "cancel":
       await handleCancel(argv);
       break;
+    case "review":
+      await handleReview(argv);
+      break;
     case "setup":
       throw new Error("`setup` is not implemented yet (lands with KMP-12). Meanwhile: check `kimi --version` and run `kimi login` in a terminal.");
-    case "review":
-    case "adversarial-review":
-      throw new Error("`review` is not implemented yet (lands with KMP-8).");
     default:
       throw new Error(`Unknown subcommand: ${subcommand}`);
   }
