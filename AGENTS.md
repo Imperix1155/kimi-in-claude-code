@@ -20,7 +20,7 @@ A Claude Code plugin that delegates code reviews and tasks to the Kimi Code CLI 
 ## Verification
 
 - `node spike/acp-spike.mjs` must print `SPIKE-GREEN` — proves the live ACP loop (requires `kimi login`; logged-out state fails at `session/new` with `-32000`). Also the regression check after any `kimi` CLI upgrade.
-- `node tests/acp-client.test.mjs` must print `ACP-CLIENT-TESTS-GREEN` — deterministic acp-client suite against the scripted fake agent (no login needed). Run after any change to `scripts/lib/acp-client.mjs` or `scripts/lib/agent-profile.mjs`.
+- `node tests/acp-client.test.mjs` must print `ACP-CLIENT-TESTS-GREEN` and `node tests/kimi.test.mjs` must print `KIMI-TESTS-GREEN` — deterministic suites against the scripted fake agent (no login needed). Run both after any change to `scripts/lib/acp-client.mjs`, `scripts/lib/kimi.mjs`, or `scripts/lib/agent-profile.mjs`.
 
 ## Child DOX Index
 

@@ -8,6 +8,8 @@ import readline from "node:readline";
 const scenario = process.argv[2] ?? "basic";
 const rl = readline.createInterface({ input: process.stdin });
 let nextAgentRequestId = 1000;
+let sessionCount = 0;
+let heldPromptId = null;
 const waiters = new Map();
 const observed = {};
 
@@ -57,6 +59,11 @@ rl.on("line", (line) => {
       process.stdout.write("null\n");
       return;
     }
+    if (scenario === "two-sessions") {
+      sessionCount += 1;
+      send({ id: message.id, result: { sessionId: `sess-${sessionCount}` } });
+      return;
+    }
     send({ id: message.id, result: { sessionId: "sess-1" } });
     return;
   }
@@ -84,6 +91,68 @@ rl.on("line", (line) => {
 
     if (scenario === "crash-mid-turn") {
       process.exit(3);
+    }
+
+    if (scenario === "refusal") {
+      send({ id: message.id, result: { stopReason: "refusal" } });
+      return;
+    }
+
+    if (scenario === "two-sessions") {
+      // Turn A (sess-1) is held open; turn B (sess-2) arriving ends A first,
+      // then keeps streaming — exercising non-LIFO capture teardown.
+      const chunk = (sessionId, text) => send({ method: "session/update", params: { sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } } });
+      if (message.params.sessionId === "sess-1") {
+        chunk("sess-1", "A1");
+        heldPromptId = message.id;
+        return;
+      }
+      chunk("sess-2", "B1");
+      send({ id: heldPromptId, result: { stopReason: "end_turn" } });
+      chunk("sess-2", "B2");
+      send({ id: message.id, result: { stopReason: "end_turn" } });
+      return;
+    }
+
+    if (scenario === "message-ids") {
+      const chunk = (messageId, text) => send({ method: "session/update", params: { sessionId: "sess-1", update: { sessionUpdate: "agent_message_chunk", messageId, content: { type: "text", text } } } });
+      chunk("m1", "first ");
+      chunk("m1", "part");
+      chunk("m2", "final answer");
+      send({ id: message.id, result: { stopReason: "end_turn" } });
+      return;
+    }
+
+    if (scenario === "turn-capture") {
+      const update = (u) => send({ method: "session/update", params: { sessionId: "sess-1", update: u } });
+      update({ sessionUpdate: "plan", entries: [
+        { content: "read the config", status: "in_progress", priority: "high" },
+        { content: "edit the files", status: "pending", priority: "medium" }
+      ] });
+      update({ sessionUpdate: "tool_call", toolCallId: "t1", title: "Read config", kind: "read", status: "in_progress" });
+      update({ sessionUpdate: "tool_call_update", toolCallId: "t1", status: "completed" });
+      update({ sessionUpdate: "tool_call", toolCallId: "t2", title: "Edit files", kind: "edit", status: "pending", locations: [{ path: "/tmp/x.mjs" }] });
+      update({ sessionUpdate: "tool_call_update", toolCallId: "t2", status: "completed", locations: [{ path: "/tmp/x.mjs" }, { path: "/tmp/y.mjs" }] });
+      update({ sessionUpdate: "tool_call_update", toolCallId: "ghost", status: "failed" });
+      // Failed edit: its locations must NOT count as touched files.
+      update({ sessionUpdate: "tool_call", toolCallId: "t3", title: "Rejected edit", kind: "edit", status: "in_progress", locations: [{ path: "/tmp/rejected.mjs" }] });
+      update({ sessionUpdate: "tool_call_update", toolCallId: "t3", status: "failed" });
+      // Completed edit reporting only diff content, no locations.
+      update({ sessionUpdate: "tool_call", toolCallId: "t4", title: "Diff-only edit", kind: "edit", status: "in_progress" });
+      update({ sessionUpdate: "tool_call_update", toolCallId: "t4", status: "completed", content: [{ type: "diff", path: "/tmp/z.mjs", oldText: "a", newText: "b" }] });
+      update({ sessionUpdate: "agent_thought_chunk", content: { type: "text", text: "thinking hard" } });
+      update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Hello, " } });
+      update({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "world." } });
+      update({ sessionUpdate: "plan", entries: [
+        { content: "read the config", status: "completed", priority: "high" },
+        { content: "edit the files", status: "completed", priority: "medium" }
+      ] });
+      update({ sessionUpdate: "future_unknown_kind", payload: 1 });
+      update({ sessionUpdate: "available_commands_update", availableCommands: [] });
+      // Different session: must be routed to the previous handler, not captured.
+      send({ method: "session/update", params: { sessionId: "sess-OTHER", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "leak" } } } });
+      send({ id: message.id, result: { stopReason: "end_turn" } });
+      return;
     }
 
     send({ method: "session/update", params: { sessionId: "sess-1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "pong" } } } });
