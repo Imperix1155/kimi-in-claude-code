@@ -26,3 +26,4 @@ A Claude Code plugin that delegates code reviews and tasks to the Kimi Code CLI 
 - `docs/PLAN.md`, `docs/ROADMAP.md` — see Local Contracts.
 - `spike/acp-spike.mjs` — M1 feasibility spike, verified 2026-07-15 (kimi v1.48.0).
 - `README.md`, `LICENSE`, `NOTICE` — public-facing.
+- `.claude-plugin/`, `commands/`, `agents/`, `skills/`, `prompts/`, `hooks/`, `schemas/`, `scripts/` — plugin skeleton forked verbatim from codex-plugin-cc 1.0.4 (KMP-1, 2026-07-16). Still codex-named until the KMP-2 rename pass; do not treat file/env names in these dirs as final.

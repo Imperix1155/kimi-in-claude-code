@@ -6,7 +6,7 @@
 
 ## Epic 0 — Project setup (small)
 
-- [ ] **KMP-1** ~~Init git repo~~ ✅ 2026-07-16 (public: github.com/Imperix1155/kimi-in-claude-code, Apache-2.0 + NOTICE, docs + spike committed). **Remaining:** fork/copy codex plugin skeleton into the repo. _(PLAN §3, §6)_
+- [x] **KMP-1** ~~Init git repo~~ ✅ 2026-07-16 (public: github.com/Imperix1155/kimi-in-claude-code, Apache-2.0 + NOTICE, docs + spike committed). ~~Fork/copy codex plugin skeleton~~ ✅ 2026-07-16 (34 files from codex-plugin-cc 1.0.4, byte-identical, verified by count + `diff -r`; excluded per PLAN §3/§6: `.in_use/`, CHANGELOG, duplicate LICENSE/NOTICE, `gpt-5-4-prompting` skill). _(PLAN §3, §6)_
 - [ ] **KMP-2** Rename pass: plugin.json manifest, `CODEX_COMPANION_*` → `KIMI_COMPANION_*` env vars, Bucket-1 verbatim copies in place. _(PLAN §4)_
 
 ## Epic 1 — Engine core (= milestone M2, the big one)
