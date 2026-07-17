@@ -11,8 +11,8 @@
 
 ## Epic 1 — Engine core (= milestone M2, the big one)
 
-- [ ] **KMP-3** `lib/agent-profile.mjs` — agent-profile abstraction; Kimi as first profile. _(PLAN §6 locked decisions)_
-- [ ] **KMP-4** `lib/acp-client.mjs` — promote spike to real client: request/response correlation, notification dispatch, agent→client request handling, exit/reconnect. _(PLAN §4 bucket 3)_
+- [x] **KMP-3** `lib/agent-profile.mjs` ✅ 2026-07-16 — agent-profile abstraction; Kimi as first profile (spawn, init caps, probe + 1.48.0 version pin, auth detection, model catalog/aliases + resolveModel, fail-closed pickPermissionOption). Verified by assertion gate (31 assertions); Codex adversarial review applied: fail-open reject fallback fixed (High), model aliases + version pin added; structured-error contract pinned on KMP-4. _(PLAN §6 locked decisions)_
+- [ ] **KMP-4** `lib/acp-client.mjs` — promote spike to real client: request/response correlation, notification dispatch, agent→client request handling, exit/reconnect. **Contract:** rejected requests must surface the structured JSON-RPC error object (`{ code, message }`), not a string-wrapped Error like the spike — `agent-profile.isAuthRequiredError` depends on it (Codex review finding, 2026-07-16). _(PLAN §4 bucket 3)_
 - [ ] **KMP-5** `lib/kimi.mjs` — turn-capture accumulator + ACP notification mapping. _(PLAN §4 bucket 3)_
 - [ ] **KMP-6** Broker: singleton `kimi acp` process shared across calls; busy signaling. _(PLAN §2, §4 bucket 2)_
 - [ ] **KMP-7** Background jobs: `task` subcommand + `/status` `/result` `/cancel`; verify session-resume semantics live (fallback: stateless sessions). _(PLAN §5 M2, §7 risk 2)_
