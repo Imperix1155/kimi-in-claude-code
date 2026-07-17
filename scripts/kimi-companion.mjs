@@ -19,14 +19,16 @@ import {
   cancelKimiSession,
   DEFAULT_CONTINUE_PROMPT,
   getKimiAvailability,
+  getKimiSetupStatus,
+  getSessionRuntimeStatus,
   isBrokerBusyError,
   parseStructuredOutput,
   resolveRequestedModel,
   runKimiTurn
 } from "./lib/kimi.mjs";
 import { interpolateTemplate, loadPromptTemplate } from "./lib/prompts.mjs";
-import { terminateProcessTree } from "./lib/process.mjs";
-import { generateJobId, listJobs, setConfig, upsertJob, writeJobFile } from "./lib/state.mjs";
+import { binaryAvailable, terminateProcessTree } from "./lib/process.mjs";
+import { generateJobId, getConfig, listJobs, setConfig, upsertJob, writeJobFile } from "./lib/state.mjs";
 import {
   buildSingleJobSnapshot,
   buildStatusSnapshot,
@@ -50,6 +52,7 @@ import {
   renderCancelReport,
   renderJobStatusReport,
   renderReviewResult,
+  renderSetupReport,
   renderStatusReport,
   renderStoredJobResult,
   renderTaskResult,
@@ -637,9 +640,7 @@ async function handleTaskWorker(argv) {
   );
 }
 
-// Only the review-gate toggles for now — the install/login/runtime probes
-// land with KMP-12.
-function handleSetup(argv) {
+async function handleSetup(argv) {
   const { options } = parseCommandInput(argv, {
     valueOptions: ["cwd"],
     booleanOptions: ["json", "enable-review-gate", "disable-review-gate"]
@@ -648,18 +649,53 @@ function handleSetup(argv) {
   if (options["enable-review-gate"] && options["disable-review-gate"]) {
     throw new Error("Choose either --enable-review-gate or --disable-review-gate.");
   }
-  if (!options["enable-review-gate"] && !options["disable-review-gate"]) {
-    throw new Error("`setup` probes are not implemented yet (lands with KMP-12). Available now: --enable-review-gate / --disable-review-gate. Meanwhile: check `kimi --version` and run `kimi login` in a terminal.");
+
+  const cwd = resolveCommandCwd(options);
+  const workspaceRoot = resolveCommandWorkspace(options);
+  const actionsTaken = [];
+
+  if (options["enable-review-gate"] || options["disable-review-gate"]) {
+    const enabled = Boolean(options["enable-review-gate"]);
+    setConfig(workspaceRoot, "stopReviewGate", enabled);
+    actionsTaken.push(`${enabled ? "Enabled" : "Disabled"} the stop-time review gate for ${workspaceRoot}.`);
   }
 
-  const workspaceRoot = resolveCommandWorkspace(options);
-  const enabled = Boolean(options["enable-review-gate"]);
-  setConfig(workspaceRoot, "stopReviewGate", enabled);
-  outputCommandResult(
-    { stopReviewGate: enabled, workspaceRoot },
-    `Stop-time review gate ${enabled ? "enabled" : "disabled"} for ${workspaceRoot}.\n`,
-    options.json
-  );
+  const nodeStatus = binaryAvailable("node", ["--version"], { cwd });
+  const status = await getKimiSetupStatus(cwd);
+  const config = getConfig(workspaceRoot);
+
+  const nextSteps = [];
+  if (status.overrideActive) {
+    nextSteps.push(`WARNING: the ${"KIMI_COMPANION_AGENT_SPAWN"} override is active — this report describes the OVERRIDE agent, not the installed Kimi CLI. Unset it for a real setup check.`);
+  }
+  if (status.state === "not-installed") {
+    nextSteps.push("Install the Kimi Code CLI: https://github.com/MoonshotAI/kimi-code — then rerun /kimi:setup.");
+  }
+  if (status.state === "logged-out") {
+    nextSteps.push("Run `kimi login` in a terminal, follow the login flow, then rerun /kimi:setup.");
+  }
+  if (status.state === "error") {
+    nextSteps.push("The agent probe failed unexpectedly. Check `kimi --version` and `kimi acp --help` manually, then rerun /kimi:setup.");
+  }
+  if (status.state === "ready" && !config.stopReviewGate) {
+    nextSteps.push("Optional: `/kimi:setup --enable-review-gate` makes ending a session require a fresh Kimi review of the last turn.");
+  }
+
+  const report = {
+    state: status.state,
+    ready: status.state === "ready" && nodeStatus.available,
+    node: nodeStatus,
+    kimi: status.kimi,
+    acp: status.acp,
+    versionNote: status.versionNote,
+    auth: status.auth,
+    sessionRuntime: getSessionRuntimeStatus(process.env, workspaceRoot),
+    reviewGateEnabled: Boolean(config.stopReviewGate),
+    actionsTaken,
+    nextSteps
+  };
+
+  outputResult(options.json ? report : renderSetupReport(report), options.json);
 }
 
 async function handleStatus(argv) {
@@ -841,7 +877,7 @@ async function main() {
       await handleReview(argv);
       break;
     case "setup":
-      handleSetup(argv);
+      await handleSetup(argv);
       break;
     default:
       throw new Error(`Unknown subcommand: ${subcommand}`);

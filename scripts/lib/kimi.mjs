@@ -330,6 +330,96 @@ export function isBrokerBusyError(error) {
   return error?.code === BROKER_BUSY_RPC_CODE;
 }
 
+// Every setup probe is bounded: a wedged agent must never hang /kimi:setup
+// (env knob exists for tests and slow machines).
+const SETUP_PROBE_TIMEOUT_MS = Number(process.env.KIMI_COMPANION_PROBE_TIMEOUT_MS) || 20_000;
+
+function withProbeDeadline(promise, label) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error(`${label} timed out after ${SETUP_PROBE_TIMEOUT_MS / 1000}s`)),
+        SETUP_PROBE_TIMEOUT_MS
+      );
+      timer.unref?.();
+    })
+  ]).finally(() => clearTimeout(timer));
+}
+
+// The three-state setup probe (PLAN §5 M4): not-installed / logged-out /
+// ready, plus "error" for anything else. Auth is probed LIVE — a short
+// direct agent spawn and a session/new attempt — because logged-out state
+// only surfaces there (PLAN §1). Never touches the shared broker.
+export async function getKimiSetupStatus(cwd) {
+  const profile = getAgentProfile();
+  const overrideActive = Boolean(process.env[AGENT_SPAWN_ENV]);
+  const kimi = getKimiAvailability(cwd);
+  const report = {
+    state: "error",
+    overrideActive,
+    kimi,
+    acp: null,
+    versionNote: null,
+    auth: { loggedIn: false, detail: "not probed" }
+  };
+
+  if (!kimi.available) {
+    report.state = "not-installed";
+    report.auth.detail = "Kimi Code CLI is not installed.";
+    return report;
+  }
+
+  if (overrideActive) {
+    report.acp = { available: true, detail: "agent spawn override active" };
+  } else {
+    report.acp = binaryAvailable(profile.probe.command, profile.probe.runtimeArgs ?? ["acp", "--help"], {
+      cwd,
+      timeout: SETUP_PROBE_TIMEOUT_MS
+    });
+    if (!report.acp.available) {
+      // Installed binary with a broken ACP runtime is an ERROR, not
+      // not-installed — "go install it" would be wrong guidance.
+      report.state = "error";
+      report.auth.detail = `The installed ${profile.displayName} CLI has no working ACP runtime: ${report.acp.detail}`;
+      return report;
+    }
+    // The success detail is the subcommand's full help text — condense it.
+    report.acp = { available: true, detail: `${profile.probe.command} ${(profile.probe.runtimeArgs ?? []).join(" ")} responds` };
+    const version = String(kimi.detail).match(/\d+\.\d+\.\d+/)?.[0] ?? null;
+    if (version && profile.probe.knownGoodVersion && version !== profile.probe.knownGoodVersion) {
+      report.versionNote = `Installed ${profile.displayName} ${version} differs from the known-good ${profile.probe.knownGoodVersion}. If anything misbehaves, run \`node spike/acp-spike.mjs\` as a 30-second regression check.`;
+    }
+  }
+
+  let client = null;
+  try {
+    client = await AcpClient.connect(cwd, { disableBroker: true, connectTimeoutMs: SETUP_PROBE_TIMEOUT_MS });
+    try {
+      await withProbeDeadline(client.request("session/new", { cwd, mcpServers: [] }), "session probe");
+      report.state = "ready";
+      report.auth = { loggedIn: true, detail: "logged in (live session check passed)" };
+    } catch (error) {
+      if (isAuthRequiredError(profile, error)) {
+        report.state = "logged-out";
+        report.auth = { loggedIn: false, detail: `Not logged in. ${profile.auth.loginInstructions}` };
+      } else {
+        report.auth = { loggedIn: false, detail: `ACP probe failed: ${error instanceof Error ? error.message : String(error)}` };
+      }
+    }
+  } catch (error) {
+    report.auth = {
+      loggedIn: false,
+      detail: `Could not start the agent: ${error instanceof Error ? error.message : String(error)}`
+    };
+  } finally {
+    await client?.close().catch(() => {});
+  }
+
+  return report;
+}
+
 // Resolves a user-supplied model name/alias to the wire id, or throws with
 // the full menu. null/empty input means "agent default" and returns null so
 // callers skip session/set_model entirely.

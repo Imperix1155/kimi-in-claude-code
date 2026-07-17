@@ -21,10 +21,16 @@ export const kimiProfile = {
   protocolVersion: 1,
   clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
 
-  // Install probe, consumed via process.mjs binaryAvailable(). The setup
-  // command compares against knownGoodVersion and warns on drift (PLAN §7:
-  // the ACP surface of a v1.x CLI may shift).
-  probe: { command: "kimi", args: ["--version"], knownGoodVersion: "1.48.0" },
+  // Install probe, consumed via process.mjs binaryAvailable(). runtimeArgs
+  // additionally proves the ACP server subcommand exists. The setup command
+  // compares against knownGoodVersion and warns on drift (PLAN §7: the ACP
+  // surface of a v1.x CLI may shift).
+  probe: {
+    command: "kimi",
+    args: ["--version"],
+    runtimeArgs: ["acp", "--help"],
+    knownGoodVersion: "1.48.0"
+  },
 
   // Logged-out state surfaces as an error on session/new, not at spawn or
   // initialize. Both code and message must match before we blame auth —

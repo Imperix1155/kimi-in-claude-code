@@ -261,8 +261,8 @@ function pathToImport(relative) {
   assert.match(empty.stderr, /Provide a prompt/);
 
   const setup = runCli(["setup"], { env, cwd });
-  assert.notEqual(setup.status, 0);
-  assert.match(setup.stderr, /KMP-12/);
+  assert.equal(setup.status, 0, "bare setup now runs the probes");
+  assert.match(setup.stdout, /# Kimi Setup/);
 }
 
 // 6b. --model alias resolves to the wire id and reaches the agent via
@@ -501,6 +501,93 @@ function makeGitWorkspace(scenario) {
   const status = runCli(["status", "--json", "--all"], { env, cwd });
   assert.equal(JSON.parse(status.stdout).latestFinished.status, "completed");
   shutdownBroker(env, cwd);
+}
+
+// 14. Setup probes: all three states of the M4 gate criterion.
+// ready — the fake agent accepts session/new.
+{
+  const { cwd, env } = makeWorkspace("basic");
+  const setup = runCli(["setup", "--json"], { env, cwd });
+  assert.equal(setup.status, 0, setup.stderr);
+  const report = JSON.parse(setup.stdout);
+  assert.equal(report.state, "ready");
+  assert.equal(report.ready, true);
+  assert.equal(report.auth.loggedIn, true);
+}
+// logged-out — session/new fails with the live-recorded auth error.
+{
+  const { cwd, env } = makeWorkspace("auth-error");
+  const setup = runCli(["setup", "--json"], { env, cwd });
+  assert.equal(setup.status, 0, setup.stderr);
+  const report = JSON.parse(setup.stdout);
+  assert.equal(report.state, "logged-out");
+  assert.equal(report.ready, false);
+  assert.match(report.auth.detail, /kimi login/);
+  assert.ok(report.nextSteps.some((step) => step.includes("kimi login")));
+}
+// not-installed — no spawn override and a PATH without the kimi binary.
+{
+  const { cwd, env } = makeWorkspace("basic");
+  const stripped = { ...env, PATH: "/usr/bin:/bin" };
+  delete stripped.KIMI_COMPANION_AGENT_SPAWN;
+  const setup = runCli(["setup", "--json"], { env: stripped, cwd });
+  assert.equal(setup.status, 0, setup.stderr);
+  const report = JSON.parse(setup.stdout);
+  assert.equal(report.state, "not-installed");
+  assert.equal(report.ready, false);
+  assert.ok(report.nextSteps.some((step) => step.includes("MoonshotAI/kimi-code")));
+}
+// toggles still work and now come with the full report.
+{
+  const { cwd, env } = makeWorkspace("basic");
+  const setup = runCli(["setup", "--enable-review-gate", "--json"], { env, cwd });
+  assert.equal(setup.status, 0, setup.stderr);
+  const report = JSON.parse(setup.stdout);
+  assert.equal(report.reviewGateEnabled, true);
+  assert.ok(report.actionsTaken.some((action) => action.includes("Enabled the stop-time review gate")));
+  // With the spawn override active, the report must warn that it describes
+  // the override agent, not the installed CLI.
+  assert.ok(report.nextSteps.some((step) => step.includes("KIMI_COMPANION_AGENT_SPAWN")));
+}
+
+// 14b. A wedged agent cannot hang setup: the handshake deadline fires, the
+// state is error, and the wedged process is killed (leak sweep verifies).
+{
+  const { cwd, env } = makeWorkspace("hang-init");
+  const setup = runCli(["setup", "--json"], { env: { ...env, KIMI_COMPANION_PROBE_TIMEOUT_MS: "2000" }, cwd });
+  assert.equal(setup.status, 0, setup.stderr);
+  const report = JSON.parse(setup.stdout);
+  assert.equal(report.state, "error");
+  assert.match(report.auth.detail, /handshake|timed out/i);
+}
+{
+  const { cwd, env } = makeWorkspace("hang-session");
+  const setup = runCli(["setup", "--json"], { env: { ...env, KIMI_COMPANION_PROBE_TIMEOUT_MS: "2000" }, cwd });
+  assert.equal(setup.status, 0, setup.stderr);
+  const report = JSON.parse(setup.stdout);
+  assert.equal(report.state, "error");
+  assert.match(report.auth.detail, /timed out/i);
+}
+
+// 14c. Installed binary with a BROKEN acp runtime is "error" (not
+// "not-installed" — install guidance would be wrong). Uses a shim kimi
+// whose --version works but whose acp subcommand fails.
+{
+  const { cwd, env } = makeWorkspace("basic");
+  const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), "kmc-shim-"));
+  fs.writeFileSync(
+    path.join(shimDir, "kimi"),
+    '#!/bin/sh\nif [ "$1" = "--version" ]; then echo "kimi, version 9.9.9"; exit 0; fi\necho "acp broken" >&2; exit 1\n'
+  );
+  fs.chmodSync(path.join(shimDir, "kimi"), 0o755);
+  const stripped = { ...env, PATH: `${shimDir}:/usr/bin:/bin` };
+  delete stripped.KIMI_COMPANION_AGENT_SPAWN;
+  const setup = runCli(["setup", "--json"], { env: stripped, cwd });
+  assert.equal(setup.status, 0, setup.stderr);
+  const report = JSON.parse(setup.stdout);
+  assert.equal(report.state, "error");
+  assert.match(report.auth.detail, /no working ACP runtime/);
+  assert.ok(!report.nextSteps.some((step) => step.includes("MoonshotAI/kimi-code")), "must not tell the user to install what is installed");
 }
 
 // Final leak sweep: the suite itself fails if any scenario left a broker or

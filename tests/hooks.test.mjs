@@ -124,7 +124,7 @@ const stopInput = (cwd, extra = {}) =>
   const { cwd, env } = makeGitWorkspace("stop-gate-allow");
   const enable = run(CLI, ["setup", "--enable-review-gate"], { env, cwd });
   assert.equal(enable.status, 0, enable.stderr);
-  assert.match(enable.stdout, /gate enabled/);
+  assert.match(enable.stdout, /Enabled the stop-time review gate/);
 
   const hook = run(STOP_HOOK, [], { env, cwd, input: stopInput(cwd) });
   assert.equal(hook.status, 0, hook.stderr);

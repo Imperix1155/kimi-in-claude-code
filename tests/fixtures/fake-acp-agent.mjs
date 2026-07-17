@@ -92,6 +92,10 @@ rl.on("line", (line) => {
       process.stdout.write("null\n");
       return;
     }
+    if (scenario === "hang-session") {
+      // initialize answered normally, session/new never answered.
+      return;
+    }
     if (scenario === "two-sessions") {
       sessionCount += 1;
       send({ id: message.id, result: { sessionId: `sess-${sessionCount}` } });

@@ -197,17 +197,21 @@ export function renderSetupReport(report) {
   const lines = [
     "# Kimi Setup",
     "",
-    `Status: ${report.ready ? "ready" : "needs attention"}`,
+    `Status: ${report.ready ? "ready" : `needs attention (${report.state})`}`,
     "",
     "Checks:",
     `- node: ${report.node.detail}`,
-    `- npm: ${report.npm.detail}`,
-    `- kimi: ${report.codex.detail}`,
+    `- kimi: ${report.kimi.detail}`,
+    `- acp runtime: ${report.acp?.detail ?? "not probed"}`,
     `- auth: ${report.auth.detail}`,
     `- session runtime: ${report.sessionRuntime.label}`,
     `- review gate: ${report.reviewGateEnabled ? "enabled" : "disabled"}`,
     ""
   ];
+
+  if (report.versionNote) {
+    lines.push(`Note: ${report.versionNote}`, "");
+  }
 
   if (report.actionsTaken.length > 0) {
     lines.push("Actions taken:");

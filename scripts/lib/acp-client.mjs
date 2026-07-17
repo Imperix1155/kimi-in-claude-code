@@ -451,9 +451,26 @@ export class AcpClient {
       ? new BrokerAcpClient(cwd, { ...options, brokerEndpoint })
       : new SpawnedAcpClient(cwd, options);
     try {
-      await client.initialize();
+      // connectTimeoutMs bounds the whole handshake; enforced HERE because
+      // only this scope holds the client handle needed to kill a wedged
+      // agent process (a caller-side race would leak it).
+      if (options.connectTimeoutMs) {
+        let timer;
+        await Promise.race([
+          client.initialize(),
+          new Promise((_, reject) => {
+            timer = setTimeout(
+              () => reject(new AcpError(`Agent did not complete the ACP handshake within ${options.connectTimeoutMs / 1000}s.`)),
+              options.connectTimeoutMs
+            );
+            timer.unref?.();
+          })
+        ]).finally(() => clearTimeout(timer));
+      } else {
+        await client.initialize();
+      }
     } catch (error) {
-      // A failed handshake must not orphan the spawned agent process.
+      // A failed or timed-out handshake must not orphan the agent process.
       await client.close().catch(() => {});
       throw error;
     }
