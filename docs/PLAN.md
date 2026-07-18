@@ -24,7 +24,7 @@ Same shape as the codex plugin — a thin Claude Code scaffold over a protocol-a
 
 ```
 Claude Code slash command
-  → node scripts/kimi-companion.mjs <subcommand>
+  → node ${CLAUDE_PLUGIN_ROOT}/scripts/kimi-companion.mjs <subcommand>
     → broker (singleton, keeps one `kimi acp` process alive across calls)
       → acp-client.mjs (JSON-RPC over stdio)
         → kimi acp
@@ -34,26 +34,35 @@ Key difference from codex: ACP is **bidirectional**. The agent sends `session/re
 
 ## 3. Repo layout
 
+**As shipped (restructured at KMP-15 — the repo is its own plugin marketplace):**
+
 ```
-kimi-plugin/                       (new git repo; fork lineage: codex-plugin-cc, keep NOTICE)
-├── .claude-plugin/plugin.json
-├── hooks/hooks.json
-├── schemas/review-output.schema.json
-├── commands/    review.md  task.md  status.md  result.md  cancel.md  setup.md  rescue.md
-├── agents/      kimi-rescue.md
-├── skills/      kimi-cli-runtime/  kimi-result-handling/   (k2-prompting deferred, see §6)
-├── prompts/     review.md  stop-review-gate.md
-└── scripts/
-    ├── kimi-companion.mjs         (CLI entry: setup/review/task/status/result/cancel)
-    ├── acp-broker.mjs             (singleton broker process)
-    └── lib/
-        ├── acp-client.mjs         ← REWRITE (seeded from spike/acp-spike.mjs)
-        ├── kimi.mjs               ← REWRITE (notification mapping + turn capture)
-        ├── broker-lifecycle.mjs, render.mjs, process.mjs          ← ADAPT
-        ├── fs.mjs, args.mjs, workspace.mjs, prompts.mjs,
-        │   state.mjs, git.mjs, job-control.mjs, tracked-jobs.mjs,
-        │   broker-endpoint.mjs                                    ← COPY
-        └── acp-protocol.d.ts      (types, from published ACP spec)
+kimi-in-claude-code/               (fork lineage: codex-plugin-cc, NOTICE preserved)
+├── .claude-plugin/marketplace.json  (catalog "imperix"; plugin source "./plugin")
+├── README.md  LICENSE  NOTICE  AGENTS.md  CLAUDE.md
+├── docs/        PLAN.md  ROADMAP.md
+├── spike/       acp-spike.mjs     (M1 feasibility proof + regression check)
+└── plugin/                        (the installable plugin)
+    ├── .claude-plugin/plugin.json
+    ├── hooks/hooks.json
+    ├── schemas/review-output.schema.json
+    ├── commands/    review.md  task.md  status.md  result.md  cancel.md  setup.md  rescue.md
+    ├── agents/      kimi-rescue.md
+    ├── skills/      kimi-cli-runtime/  kimi-result-handling/   (k2-prompting deferred, see §6)
+    ├── prompts/     review.md  stop-review-gate.md
+    ├── tests/       *.test.mjs + fixtures/fake-acp-agent.mjs   (plain-node suites)
+    └── scripts/
+        ├── kimi-companion.mjs     (CLI entry: setup/review/task/status/result/cancel)
+        ├── acp-broker.mjs         (singleton broker process)
+        ├── session-lifecycle-hook.mjs  stop-review-gate-hook.mjs
+        └── lib/
+            ├── acp-client.mjs     (rewritten from the spike)
+            ├── kimi.mjs           (turn capture + orchestration)
+            ├── agent-profile.mjs  (all agent-specific config)
+            ├── broker-lifecycle.mjs, render.mjs, process.mjs      (adapted)
+            └── fs.mjs, args.mjs, workspace.mjs, prompts.mjs,
+                state.mjs, git.mjs, job-control.mjs, tracked-jobs.mjs,
+                broker-endpoint.mjs                                (copied)
 ```
 
 ## 4. File-by-file

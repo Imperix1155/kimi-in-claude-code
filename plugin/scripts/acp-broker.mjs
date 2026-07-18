@@ -44,7 +44,7 @@ function writePidFile(pidFile) {
 async function main() {
   const [subcommand, ...argv] = process.argv.slice(2);
   if (subcommand !== "serve") {
-    throw new Error("Usage: node scripts/acp-broker.mjs serve --endpoint <value> [--cwd <path>] [--pid-file <path>] [--agent-spawn <json>]");
+    throw new Error("Usage: node <plugin-root>/scripts/acp-broker.mjs serve --endpoint <value> [--cwd <path>] [--pid-file <path>] [--agent-spawn <json>]");
   }
 
   const { options } = parseArgs(argv, {

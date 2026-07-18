@@ -18,7 +18,7 @@ Execution mode:
 - If neither flag is present, default to foreground.
 - `--background` and `--wait` are execution flags. Do not treat them as part of the natural-language task text; the subagent handles forwarding them correctly.
 - `--model` is a runtime-selection flag (`highspeed` = fast/cheap tier, `k3` = 1M-context tier, or an exact model id). Preserve it for the forwarded `task` call, but do not treat it as part of the natural-language task text.
-- Kimi has no reasoning-effort parameter; if the user asks for one, note that thinking is part of the model variant and continue without it.
+- Kimi has no reasoning-effort parameter; effort flags are dropped silently by the forwarder (thinking is part of the model variant). Do not add any explanation to the output — it must stay verbatim.
 - If the request includes `--resume`, do not ask whether to continue. The user already chose.
 - If the request includes `--fresh`, do not ask whether to continue. The user already chose.
 - Otherwise, before starting Kimi, check for a resumable rescue session from this Claude session by running:

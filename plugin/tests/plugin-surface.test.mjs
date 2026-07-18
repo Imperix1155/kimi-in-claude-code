@@ -3,7 +3,7 @@
 // stale codex references, no invocations of scripts that don't exist, no
 // broken agent->skill links. This is the regression guard that would have
 // caught commands/setup.md still invoking the deleted codex script.
-// Run: node tests/plugin-surface.test.mjs  (prints PLUGIN-SURFACE-TESTS-GREEN)
+// Run: node plugin/tests/plugin-surface.test.mjs  (prints PLUGIN-SURFACE-TESTS-GREEN)
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
@@ -44,7 +44,8 @@ for (const file of surfaceFiles) {
 // file that exists.
 for (const file of surfaceFiles) {
   const content = fs.readFileSync(file, "utf8");
-  for (const match of content.matchAll(/\$\{CLAUDE_PLUGIN_ROOT\}\/([A-Za-z0-9_\-./]+)/g)) {
+  // Both spellings: ${CLAUDE_PLUGIN_ROOT}/... and $CLAUDE_PLUGIN_ROOT/...
+  for (const match of content.matchAll(/\$\{?CLAUDE_PLUGIN_ROOT\}?\/([A-Za-z0-9_\-./]+)/g)) {
     const target = path.join(ROOT, match[1]);
     assert.ok(fs.existsSync(target), `${path.relative(ROOT, file)} references missing ${match[1]}`);
   }
@@ -63,7 +64,8 @@ assert.ok(hooks.hooks.SessionStart && hooks.hooks.SessionEnd, "lifecycle hooks m
 {
   const repoRoot = path.dirname(ROOT);
   const marketplacePath = path.join(repoRoot, ".claude-plugin", "marketplace.json");
-  if (fs.existsSync(marketplacePath)) {
+  assert.ok(fs.existsSync(marketplacePath), "marketplace.json must exist at the repo root (the repo IS the marketplace)");
+  {
     const raw = fs.readFileSync(marketplacePath, "utf8");
     assert.ok(!/codex/i.test(raw), "stale codex reference in marketplace.json");
     const market = JSON.parse(raw);

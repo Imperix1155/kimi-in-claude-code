@@ -1,5 +1,5 @@
 // Deterministic turn-capture tests against the scripted fake agent.
-// Run: node tests/kimi.test.mjs  (prints KIMI-TESTS-GREEN)
+// Run: node plugin/tests/kimi.test.mjs  (prints KIMI-TESTS-GREEN)
 import assert from "node:assert/strict";
 import process from "node:process";
 import { fileURLToPath } from "node:url";

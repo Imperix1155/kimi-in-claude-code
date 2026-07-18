@@ -72,11 +72,11 @@ function printUsage() {
   console.log(
     [
       "Usage:",
-      "  node scripts/kimi-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <id|highspeed|k3>] [focus text]",
-      "  node scripts/kimi-companion.mjs task [--background] [--write|--read-only] [--resume-last|--resume|--fresh] [--model <id|highspeed|k3>] [--prompt-file <path>] [prompt]",
-      "  node scripts/kimi-companion.mjs status [job-id] [--all] [--wait] [--json]",
-      "  node scripts/kimi-companion.mjs result [job-id] [--json]",
-      "  node scripts/kimi-companion.mjs cancel [job-id] [--json]",
+      "  node <plugin-root>/scripts/kimi-companion.mjs review [--wait|--background] [--base <ref>] [--scope <auto|working-tree|branch>] [--model <id|highspeed|k3>] [focus text]",
+      "  node <plugin-root>/scripts/kimi-companion.mjs task [--background] [--write|--read-only] [--resume-last|--resume|--fresh] [--model <id|highspeed|k3>] [--prompt-file <path>] [prompt]",
+      "  node <plugin-root>/scripts/kimi-companion.mjs status [job-id] [--all] [--wait] [--json]",
+      "  node <plugin-root>/scripts/kimi-companion.mjs result [job-id] [--json]",
+      "  node <plugin-root>/scripts/kimi-companion.mjs cancel [job-id] [--json]",
       "",
       "A single quoted prompt argument is re-tokenized (slash-command calling",
       "convention); pass exact text via --prompt-file or piped stdin.",

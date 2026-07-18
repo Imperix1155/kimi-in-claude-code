@@ -1,5 +1,5 @@
 // Broker tests: a real detached acp-broker.mjs process serving the scripted
-// fake agent. Run: node tests/acp-broker.test.mjs  (prints ACP-BROKER-TESTS-GREEN)
+// fake agent. Run: node plugin/tests/acp-broker.test.mjs  (prints ACP-BROKER-TESTS-GREEN)
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
