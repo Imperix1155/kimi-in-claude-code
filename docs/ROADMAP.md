@@ -36,7 +36,7 @@
 
 ## Epic 4 — Open-source release
 
-- [ ] **KMP-14** README from PLAN §8 positioning (strengths AND honest limits). _(PLAN §8)_
+- [x] **KMP-14** ✅ 2026-07-17 — README updated from "nothing installable" to feature-complete/pre-1.0: PLAN §8 positioning preserved (strengths + honest limits), added Requirements, a full command reference table (all 7 commands with real flags from the argument-hints), models/background-jobs notes, an example flow, the client-side read-only enforcement explanation, and honest manual-setup-until-marketplace framing (KMP-15/16 called out). Verified: Node floor claim (18+) checked against actual runtime APIs (`Object.hasOwn`/`.at` = 16.9+); table delimiters and all local doc links validated. _(PLAN §8)_
 - [ ] **KMP-15** Publish repo (GitHub, public); marketplace listing so it installs via Claude Code plugin marketplace.
 - [ ] **KMP-16** Review pass before publish (review-loop: fallow + /code-review + Codex adversarial). _(house rule)_
 
