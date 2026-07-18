@@ -2,7 +2,7 @@
 
 Use [Kimi Code CLI](https://github.com/MoonshotAI/kimi-code) from inside [Claude Code](https://claude.com/claude-code) — delegate code reviews and long-running tasks to Kimi (K2.x / K3) over the open [Agent Client Protocol](https://agentclientprotocol.com), the same way OpenAI's Codex plugin bridges to Codex.
 
-> **Status: feature-complete, pre-1.0.** All commands work end-to-end against a live `kimi acp` and are covered by an automated test suite. What's left before a tagged 1.0 is the one-line marketplace install ([`docs/ROADMAP.md`](docs/ROADMAP.md) KMP-15) and a final review pass (KMP-16). Until the marketplace listing lands, running it takes the manual setup below. Watch/star if you want the one-line install when it ships.
+> **Status: v0.1.0 — feature-complete, pre-1.0.** All commands work end-to-end against a live `kimi acp` and are covered by an automated test suite. Installable from this repo as its own plugin marketplace (see [Install](#install)). Pre-1.0 while the surface settles; expect updates via `/plugin marketplace update`.
 
 ## Why bridge Kimi into Claude Code?
 
@@ -64,19 +64,26 @@ The read-only guarantee for reviews is enforced **client-side** by the plugin's 
 
 Because the engine speaks **standard ACP** — not a vendor-private dialect — the agent backend is a pluggable profile. Kimi is the first; any ACP-speaking agent (Grok Build, OpenCode, …) is a profile away. See [`docs/PLAN.md`](docs/PLAN.md) §9 for the portability roadmap, including a planned MCP-server skin so any MCP-capable harness can use the bridge.
 
-## Manual setup (until the marketplace listing lands)
+## Install
 
-1. Ensure the requirements above are met (`kimi --version`, `kimi login`, `node --version`).
-2. Clone this repo.
-3. Add it to Claude Code as a local plugin. The one-line marketplace install is [KMP-15](docs/ROADMAP.md); until it ships, follow Claude Code's local-plugin instructions pointing at your clone.
-4. Verify the bridge itself with `node spike/acp-spike.mjs` → prints `SPIKE-GREEN` (requires `kimi login`). This doubles as a 30-second regression check after any `kimi` CLI upgrade.
+This repository is its own Claude Code plugin marketplace (`imperix`). From inside Claude Code:
+
+```
+/plugin marketplace add Imperix1155/kimi-in-claude-code
+/plugin install kimi@imperix
+/kimi:setup
+```
+
+`/kimi:setup` confirms Kimi is installed, logged in, and ACP-ready. Update later with `/plugin marketplace update`.
+
+Prefer to verify the bridge before installing? `node spike/acp-spike.mjs` prints `SPIKE-GREEN` against your live `kimi acp` (requires `kimi login`) — also the 30-second regression check after any `kimi` CLI upgrade.
 
 ## Project documents
 
 - [`docs/PLAN.md`](docs/PLAN.md) — architecture, file-by-file build plan, milestone verify-gates, design decisions, risks
 - [`docs/ROADMAP.md`](docs/ROADMAP.md) — the work tracker (KMP-1…21)
 - [`spike/acp-spike.mjs`](spike/acp-spike.mjs) — the feasibility proof and post-upgrade regression check
-- `tests/` — plain-Node suites run with `node tests/<name>.test.mjs`; each prints a `*-GREEN` sentinel
+- `plugin/` — the installable plugin (manifest, commands, agents, skills, scripts); `plugin/tests/` holds the plain-Node suites (`node plugin/tests/<name>.test.mjs`, each prints a `*-GREEN` sentinel)
 
 ## License
 

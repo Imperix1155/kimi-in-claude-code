@@ -1,7 +1,7 @@
 // Hostile-value tests for the review renderer: finding values are
 // Kimi-authored text downstream of reviewed repo content and must not be
 // able to spoof rendered structure, break out of fences, or balloon output.
-// Run: node tests/render.test.mjs  (prints RENDER-TESTS-GREEN)
+// Run: node plugin/tests/render.test.mjs  (prints RENDER-TESTS-GREEN)
 import assert from "node:assert/strict";
 import { renderReviewResult } from "../scripts/lib/render.mjs";
 

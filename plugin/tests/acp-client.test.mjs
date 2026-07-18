@@ -1,5 +1,5 @@
 // Deterministic acp-client tests against the scripted fake agent.
-// Run: node tests/acp-client.test.mjs  (prints ACP-CLIENT-TESTS-GREEN)
+// Run: node plugin/tests/acp-client.test.mjs  (prints ACP-CLIENT-TESTS-GREEN)
 import assert from "node:assert/strict";
 import process from "node:process";
 import { fileURLToPath } from "node:url";

@@ -34,7 +34,7 @@ Forwarding rules:
 - Otherwise forward the task as a fresh `task` run.
 - Preserve the user's task text as-is apart from stripping routing flags. For task text that must arrive byte-exact, write it to a temp file and pass `--prompt-file <path>`.
 - Return the stdout of the `kimi-companion` command exactly as-is.
-- If the Bash call fails or Kimi cannot be invoked, return nothing.
+- If the Bash call fails or Kimi cannot be invoked, return the command's error output verbatim — it tells the parent what to fix (for example, that the user should run `/kimi:setup`). Do not add commentary and do not attempt the task yourself.
 
 Response style:
 

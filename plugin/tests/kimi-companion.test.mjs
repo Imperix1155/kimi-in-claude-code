@@ -1,7 +1,7 @@
 // Companion CLI tests: drive the real kimi-companion.mjs as child processes
 // against the scripted fake agent (KIMI_COMPANION_AGENT_SPAWN override),
 // with job state isolated via CLAUDE_PLUGIN_DATA.
-// Run: node tests/kimi-companion.test.mjs  (prints KIMI-COMPANION-TESTS-GREEN)
+// Run: node plugin/tests/kimi-companion.test.mjs  (prints KIMI-COMPANION-TESTS-GREEN)
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
@@ -590,11 +590,27 @@ function makeGitWorkspace(scenario) {
   assert.ok(!report.nextSteps.some((step) => step.includes("MoonshotAI/kimi-code")), "must not tell the user to install what is installed");
 }
 
+
+// Only TEST processes count as leaks: the plugin may be legitimately
+// installed and in use on this machine (real brokers from real sessions
+// must not fail the suite). Test brokers are identified by a test-workspace
+// --cwd (kmc- mkdtemp prefix) or the --agent-spawn test flag; fake agents
+// are unambiguous.
+function listLeakedTestProcesses() {
+  const ps = spawnSync("ps", ["ax", "-o", "pid=,command="], { encoding: "utf8" }).stdout ?? "";
+  return ps
+    .split("\n")
+    .filter((line) =>
+      /fake-acp-agent/.test(line) ||
+      (/acp-broker\.mjs serve/.test(line) && (/--agent-spawn/.test(line) || /--cwd\s+\S*kmc-/.test(line)))
+    );
+}
+
 // Final leak sweep: the suite itself fails if any scenario left a broker or
 // fake agent running — silent leaks must not depend on a manual pgrep.
 await new Promise((resolve) => setTimeout(resolve, 500));
-const sweep = spawnSync("pgrep", ["-f", "fake-acp-agent|acp-broker.mjs serve"], { encoding: "utf8" });
-assert.equal((sweep.stdout ?? "").trim(), "", `leaked processes:\n${sweep.stdout}`);
+const leaked = listLeakedTestProcesses();
+assert.deepEqual(leaked, [], `leaked TEST processes:\n${leaked.join("\n")}`);
 
 console.log("KIMI-COMPANION-TESTS-GREEN");
 process.exit(0);
