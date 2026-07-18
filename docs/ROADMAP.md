@@ -37,7 +37,7 @@
 ## Epic 4 — Open-source release
 
 - [x] **KMP-14** ✅ 2026-07-17 — README updated from "nothing installable" to feature-complete/pre-1.0: PLAN §8 positioning preserved (strengths + honest limits), added Requirements, a full command reference table (all 7 commands with real flags from the argument-hints), models/background-jobs notes, an example flow, the client-side read-only enforcement explanation, and honest manual-setup-until-marketplace framing (KMP-15/16 called out). Verified: Node floor claim (18+) checked against actual runtime APIs (`Object.hasOwn`/`.at` = 16.9+); table delimiters and all local doc links validated. _(PLAN §8)_
-- [ ] **KMP-15** Publish repo (GitHub, public); marketplace listing so it installs via Claude Code plugin marketplace.
+- [~] **KMP-15** PREPARED on branch `kmp15-marketplace`, HELD off `main` until KMP-16 clears (owner decision 2026-07-17). Repo restructured into its own marketplace: plugin moved to `plugin/` (`source: "./plugin"`), root `.claude-plugin/marketplace.json` is the `imperix` catalog (name chosen; no email, per owner). Install once merged: `/plugin marketplace add Imperix1155/kimi-in-claude-code` → `/plugin install kimi@imperix`. Verified: full seven-suite battery green from `plugin/tests/`, marketplace manifest schema-validated + source resolves to the real plugin manifest (surface-lint check added), README/AGENTS updated, `main` confirmed to still carry no marketplace.json (not installable). **Completes when KMP-16 passes and the branch merges.**
 - [ ] **KMP-16** Review pass before publish (review-loop: fallow + /code-review + Codex adversarial). _(house rule)_
 
 ## Epic 5 — Post-v1 portability (backlog, no gate)

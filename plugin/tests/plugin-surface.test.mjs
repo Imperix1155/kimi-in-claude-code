@@ -57,6 +57,32 @@ const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, "hooks", "hooks.json"),
 assert.ok(hooks.hooks.Stop, "Stop hook must be wired");
 assert.ok(hooks.hooks.SessionStart && hooks.hooks.SessionEnd, "lifecycle hooks must be wired");
 
+// 3b. Marketplace catalog (repo root, one level above the plugin): parses,
+// carries the expected identity, its plugin source resolves to a real
+// plugin manifest, and it leaks no email.
+{
+  const repoRoot = path.dirname(ROOT);
+  const marketplacePath = path.join(repoRoot, ".claude-plugin", "marketplace.json");
+  if (fs.existsSync(marketplacePath)) {
+    const raw = fs.readFileSync(marketplacePath, "utf8");
+    assert.ok(!/codex/i.test(raw), "stale codex reference in marketplace.json");
+    const market = JSON.parse(raw);
+    assert.equal(market.name, "imperix");
+    assert.ok(market.owner?.name, "marketplace owner name required");
+    assert.ok(!market.owner?.email, "no email should be exposed in the marketplace owner block");
+    assert.equal(market.plugins.length, 1);
+    const entry = market.plugins[0];
+    assert.equal(entry.name, "kimi");
+    assert.ok(!entry.author?.email, "no email should be exposed in the plugin author block");
+    const resolved = path.resolve(repoRoot, entry.source);
+    assert.ok(
+      fs.existsSync(path.join(resolved, ".claude-plugin", "plugin.json")),
+      `marketplace plugin source ${entry.source} must contain a plugin manifest`
+    );
+    assert.equal(resolved, ROOT, "marketplace source must point at this plugin");
+  }
+}
+
 // 4. Agent frontmatter: every referenced skill exists as a skills/ dir.
 for (const file of listFiles("agents", ".md")) {
   const content = fs.readFileSync(file, "utf8");
