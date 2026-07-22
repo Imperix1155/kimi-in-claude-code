@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "Bridge Kimi Code CLI into Claude Code for reviews and delegated tasks over the Agent Client Protocol.",
-    "version": "0.1.0"
+    "version": "0.1.1"
   },
   "plugins": [
     {
       "name": "kimi",
       "source": "./plugin",
       "description": "Use Kimi from Claude Code to review code or delegate tasks.",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "author": {
         "name": "Imperix1155"
       },

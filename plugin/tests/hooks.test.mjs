@@ -249,10 +249,21 @@ function listLeakedTestProcesses() {
   const ps = spawnSync("ps", ["ax", "-o", "pid=,command="], { encoding: "utf8" }).stdout ?? "";
   return ps
     .split("\n")
-    .filter((line) =>
-      /fake-acp-agent/.test(line) ||
-      (/acp-broker\.mjs serve/.test(line) && (/--agent-spawn/.test(line) || /--cwd\s+\S*kmc-/.test(line)))
-    );
+    .filter((line) => {
+      // Exclude shell/orchestration wrappers whose command line merely
+      // MENTIONS the fixture name (e.g. a `--check .../fake-acp-agent.mjs`
+      // or `pgrep -f "fake-acp-agent"` runner) — match only the actual
+      // scripted-agent and test-broker PROCESSES.
+      if (/\bpgrep\b|\bsh -c\b|\bzsh\b|\beval\b|--check\b|node -e |-o pid=/.test(line)) {
+        return false;
+      }
+      // Real fake agent: `node <path>/fake-acp-agent.mjs <scenario>`.
+      if (/fake-acp-agent\.mjs\s+\S/.test(line)) {
+        return true;
+      }
+      // Real test broker: serving with a test-workspace cwd or the test override.
+      return /acp-broker\.mjs serve/.test(line) && (/--agent-spawn/.test(line) || /--cwd\s+\S*kmc-/.test(line));
+    });
 }
 
 // Final leak sweep.

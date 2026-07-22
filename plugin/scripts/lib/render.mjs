@@ -361,14 +361,44 @@ export function renderReviewResult(parsedResult, meta) {
   return `${lines.join("\n").trimEnd()}\n`;
 }
 
-export function renderTaskResult(parsedResult, meta) {
-  const rawOutput = typeof parsedResult?.rawOutput === "string" ? parsedResult.rawOutput : "";
+export function renderTaskResult(parsedResult) {
+  const rawOutput = typeof parsedResult?.rawOutput === "string" ? parsedResult.rawOutput.trim() : "";
+  const toolOutputs = (Array.isArray(parsedResult?.toolOutputs) ? parsedResult.toolOutputs : []).filter(
+    (entry) => entry && typeof entry.text === "string" && entry.text.trim()
+  );
+  const stderr = String(parsedResult?.stderr ?? "").trim();
+
+  const parts = [];
   if (rawOutput) {
-    return rawOutput.endsWith("\n") ? rawOutput : `${rawOutput}\n`;
+    parts.push(rawOutput);
+  }
+  // Surface tool / sub-agent output. When the model routes the real work
+  // through tools and emits only a thin message (or none), this content IS
+  // the deliverable — appended verbatim so nothing completed is lost. Titles
+  // are agent-authored, so they are flattened to one line; bodies are the
+  // task's own output and stay verbatim by design.
+  if (toolOutputs.length > 0) {
+    if (rawOutput) {
+      parts.push("", "---", "", "### Tool / sub-agent output");
+    }
+    for (const entry of toolOutputs) {
+      const label = sanitizeInline(entry.title || entry.kind || "tool", 120);
+      const statusSuffix = entry.status && entry.status !== "completed" ? ` (${sanitizeInline(entry.status, 20)})` : "";
+      parts.push("", `#### ${label}${statusSuffix}`, "", entry.text.trim());
+    }
   }
 
-  const message = String(parsedResult?.failureMessage ?? "").trim() || "Kimi did not return a final message.";
-  return `${message}\n`;
+  if (parts.length > 0) {
+    return `${parts.join("\n").trim()}\n`;
+  }
+
+  // Nothing usable at all. Report that honestly — never present raw client
+  // stderr AS the answer; offer it only as a clearly-labelled diagnostic.
+  const lines = ["Kimi produced no output for this task: the turn ended without a message or any tool results."];
+  if (stderr) {
+    lines.push("", "Diagnostic output (stderr, not the task result):", safeFence(stderr));
+  }
+  return `${lines.join("\n")}\n`;
 }
 
 export function renderStatusReport(report) {

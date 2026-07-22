@@ -404,34 +404,48 @@ async function executeTaskRun(request) {
 
   const taskMetadata = buildTaskRunMetadata(request);
   const rawOutput = result.agentMessage ?? "";
-  const failureMessage = result.stderr ?? "";
-  const rendered = renderTaskResult(
-    { rawOutput, failureMessage },
-    { title: taskMetadata.title, jobId: request.jobId ?? null, write: Boolean(request.write) }
-  );
+  const toolOutputs = result.toolOutputs ?? [];
+  const stderr = result.stderr ?? "";
+  const rendered = renderTaskResult({ rawOutput, toolOutputs, stderr });
+
+  // Content-aware exit status: a turn that ended cleanly but produced no
+  // message AND no tool output did nothing usable — surface that as a
+  // failure so an automated caller can't read exit 0 as success. Mirrors the
+  // guard the review path already has. A non-end_turn stop keeps its own
+  // nonzero status (partial content still rendered above).
+  const exitStatus = result.status !== 0 ? result.status : result.hasContent ? 0 : 1;
+
   const payload = {
-    status: result.status,
+    status: exitStatus,
     stopReason: result.stopReason,
     sessionId: result.sessionId,
     rawOutput,
     lastAgentMessage: result.lastAgentMessage,
+    // The recovered tool/sub-agent content — the fix for silently-dropped
+    // work. Full text, since for a task this IS the deliverable.
+    toolOutputs,
     touchedFiles: result.touchedFiles,
     permissionEvents: (result.permissionEvents ?? []).map((event) => ({
       decision: event.decision,
       outcome: event.outcome?.outcome ?? null,
       optionId: event.outcome?.optionId ?? null
     })),
-    reasoning: result.reasoning
+    reasoning: result.reasoning,
+    // Diagnostic only — never the task result (was previously dropped from JSON).
+    stderr
   };
 
   return {
-    exitStatus: result.status,
+    exitStatus,
     cancelled: result.stopReason === "cancelled",
     threadId: result.sessionId,
     turnId: null,
     payload,
     rendered,
-    summary: firstMeaningfulLine(result.lastAgentMessage || rawOutput, `${taskMetadata.title} finished (${result.stopReason ?? "no stop reason"}).`),
+    summary: firstMeaningfulLine(
+      result.lastAgentMessage || rawOutput || toolOutputs[0]?.text,
+      `${taskMetadata.title} finished (${result.stopReason ?? "no stop reason"}).`
+    ),
     jobTitle: taskMetadata.title,
     jobClass: "task",
     write: Boolean(request.write)

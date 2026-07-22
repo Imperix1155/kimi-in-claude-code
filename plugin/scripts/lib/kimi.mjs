@@ -64,8 +64,17 @@ function extractTextContent(content) {
   if (Array.isArray(content)) {
     return content.map((block) => extractTextContent(block)).join("");
   }
-  if (typeof content === "object" && content.type === "text" && typeof content.text === "string") {
-    return content.text;
+  if (typeof content === "object") {
+    // Plain text block ({type:"text", text}) or a bare {text}.
+    if (typeof content.text === "string") {
+      return content.text;
+    }
+    // ACP tool-result blocks wrap the payload: {type:"content", content:{text}}
+    // — verified live against kimi 2026-07-22. Unwrap it so tool/sub-agent
+    // output is not silently dropped.
+    if (content.content !== undefined) {
+      return extractTextContent(content.content);
+    }
   }
   return "";
 }
@@ -222,16 +231,44 @@ function collectTouchedFiles(state) {
   return [...paths];
 }
 
+// Text a tool call carried in its result content (e.g. an "Agent" sub-agent's
+// report). This is the deliverable when the model routes work through tools
+// and emits only a thin final message — it MUST be recoverable, or completed
+// work is silently lost (verified live 2026-07-22).
+function collectToolOutputs(state) {
+  const outputs = [];
+  for (const call of state.toolCalls.values()) {
+    const text = extractTextContent(call.content).trim();
+    if (text) {
+      outputs.push({
+        toolCallId: call.toolCallId,
+        title: call.title ?? "",
+        kind: call.kind ?? "other",
+        status: call.status ?? "pending",
+        text
+      });
+    }
+  }
+  return outputs;
+}
+
 export function buildTurnResult(state, promptResponse) {
   const stopReason = promptResponse?.stopReason ?? null;
   const messages = state.messageSegments.map((segment) => segment.parts.join(""));
+  const agentMessage = messages.join("\n\n");
+  const toolOutputs = collectToolOutputs(state);
   return {
     status: stopReason === "end_turn" ? 0 : 1,
     stopReason,
-    agentMessage: messages.join("\n\n"),
+    agentMessage,
     lastAgentMessage: messages.at(-1) ?? "",
     reasoning: state.thoughtParts.join(""),
     toolCalls: [...state.toolCalls.values()],
+    toolOutputs,
+    // A turn that "completed" but produced no message AND no tool output did
+    // nothing usable — callers key exit status and rendering off this so an
+    // empty end_turn is not reported as success.
+    hasContent: Boolean(agentMessage.trim()) || toolOutputs.length > 0,
     touchedFiles: collectTouchedFiles(state),
     plan: state.planEntries,
     unknownUpdateKinds: [...state.unknownUpdateKinds]

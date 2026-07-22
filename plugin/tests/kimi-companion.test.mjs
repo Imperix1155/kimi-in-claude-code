@@ -600,10 +600,66 @@ function listLeakedTestProcesses() {
   const ps = spawnSync("ps", ["ax", "-o", "pid=,command="], { encoding: "utf8" }).stdout ?? "";
   return ps
     .split("\n")
-    .filter((line) =>
-      /fake-acp-agent/.test(line) ||
-      (/acp-broker\.mjs serve/.test(line) && (/--agent-spawn/.test(line) || /--cwd\s+\S*kmc-/.test(line)))
-    );
+    .filter((line) => {
+      // Exclude shell/orchestration wrappers whose command line merely
+      // MENTIONS the fixture name (e.g. a `--check .../fake-acp-agent.mjs`
+      // or `pgrep -f "fake-acp-agent"` runner) — match only the actual
+      // scripted-agent and test-broker PROCESSES.
+      if (/\bpgrep\b|\bsh -c\b|\bzsh\b|\beval\b|--check\b|node -e |-o pid=/.test(line)) {
+        return false;
+      }
+      // Real fake agent: `node <path>/fake-acp-agent.mjs <scenario>`.
+      if (/fake-acp-agent\.mjs\s+\S/.test(line)) {
+        return true;
+      }
+      // Real test broker: serving with a test-workspace cwd or the test override.
+      return /acp-broker\.mjs serve/.test(line) && (/--agent-spawn/.test(line) || /--cwd\s+\S*kmc-/.test(line));
+    });
+}
+
+// 15. Output-loss fix (2026-07-22): a task whose deliverable is in a
+// sub-agent tool call, with only a thin final message, must surface that
+// content in BOTH the rendered output and the --json payload, and exit 0.
+{
+  const { cwd, env } = makeWorkspace("task-tool-content");
+  const run = runCli(["task", "surface it"], { env, cwd });
+  assert.equal(run.status, 0, `task failed: ${run.stderr}`);
+  assert.match(run.stdout, /Audit dispatched\./);
+  assert.match(run.stdout, /AUDIT-BODY: 3 findings/, "the sub-agent's content must not be dropped");
+  assert.match(run.stdout, /Agent: Audit src\//);
+
+  const json = runCli(["task", "--json", "surface it"], { env, cwd });
+  const payload = JSON.parse(json.stdout);
+  assert.equal(payload.toolOutputs.length, 1);
+  assert.match(payload.toolOutputs[0].text, /AUDIT-BODY/);
+  shutdownBroker(env, cwd);
+}
+
+// 15b. Tool-output-only turn (no final message) still surfaces content and
+// exits 0 — a productive turn is not a false failure.
+{
+  const { cwd, env } = makeWorkspace("task-tool-only");
+  const run = runCli(["task", "--json", "go"], { env, cwd });
+  assert.equal(run.status, 0, run.stderr);
+  const payload = JSON.parse(run.stdout);
+  assert.equal(payload.status, 0);
+  assert.match(payload.toolOutputs[0].text, /TOOL-ONLY-DELIVERABLE/);
+  const rendered = runCli(["task", "go"], { env, cwd });
+  assert.match(rendered.stdout, /TOOL-ONLY-DELIVERABLE/);
+  shutdownBroker(env, cwd);
+}
+
+// 15c. A clean end_turn that produced nothing usable is a FAILURE (exit
+// nonzero, job failed), with an honest message — never exit 0 as before.
+{
+  const { cwd, env } = makeWorkspace("task-empty");
+  const run = runCli(["task", "nothing"], { env, cwd });
+  assert.notEqual(run.status, 0, "an empty turn must exit nonzero");
+  assert.match(run.stdout, /produced no output/i);
+  assert.doesNotMatch(run.stdout, /did not return a final message/, "old misleading string is gone");
+  const status = runCli(["status", "--json", "--all"], { env, cwd });
+  assert.equal(JSON.parse(status.stdout).latestFinished.status, "failed");
+  shutdownBroker(env, cwd);
 }
 
 // Final leak sweep: the suite itself fails if any scenario left a broker or

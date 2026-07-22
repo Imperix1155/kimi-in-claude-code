@@ -203,4 +203,30 @@ function connectTo(scenario, options = {}) {
   assert.equal(ok.parseError, null);
 }
 
+// 10. Tool/sub-agent output is captured and recoverable (2026-07-22 fix):
+// ACP wraps tool results as {type:"content", content:{text}}; the engine must
+// unwrap it into toolOutputs and set hasContent, even when the final message
+// is thin. Also the empty-turn case: no message, no tools -> hasContent false.
+{
+  const client = await connectTo("task-tool-content");
+  await client.request("session/new", { cwd: process.cwd(), mcpServers: [] });
+  const result = await runPromptTurn(client, { sessionId: "sess-1", prompt: "audit" });
+  assert.equal(result.agentMessage, "Audit dispatched.");
+  assert.equal(result.toolOutputs.length, 1);
+  assert.match(result.toolOutputs[0].text, /AUDIT-BODY: 3 findings/);
+  assert.equal(result.toolOutputs[0].status, "completed");
+  assert.equal(result.hasContent, true);
+  await client.close();
+}
+{
+  const client = await connectTo("task-empty");
+  await client.request("session/new", { cwd: process.cwd(), mcpServers: [] });
+  const result = await runPromptTurn(client, { sessionId: "sess-1", prompt: "x" });
+  assert.equal(result.stopReason, "end_turn");
+  assert.equal(result.agentMessage, "");
+  assert.equal(result.toolOutputs.length, 0);
+  assert.equal(result.hasContent, false, "an empty end_turn must not report content");
+  await client.close();
+}
+
 console.log("KIMI-TESTS-GREEN");

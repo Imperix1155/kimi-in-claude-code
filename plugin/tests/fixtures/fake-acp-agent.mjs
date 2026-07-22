@@ -119,6 +119,32 @@ rl.on("line", (line) => {
       return;
     }
 
+    // A turn whose real deliverable lives in an "Agent" sub-agent tool call
+    // (ACP wraps it as {type:"content", content:{text}}), with only a thin
+    // final message. Reproduces the live 2026-07-22 output-loss bug.
+    if (scenario === "task-tool-content") {
+      const sid = message.params.sessionId ?? "sess-1";
+      const upd = (u) => send({ method: "session/update", params: { sessionId: sid, update: u } });
+      upd({ sessionUpdate: "tool_call", toolCallId: "a1", title: "Agent: Audit src/", kind: "other", status: "in_progress" });
+      upd({ sessionUpdate: "tool_call_update", toolCallId: "a1", status: "completed", content: [{ type: "content", content: { type: "text", text: "AUDIT-BODY: 3 findings in src/, line-level detail here." } }] });
+      upd({ sessionUpdate: "agent_message_chunk", content: { type: "text", text: "Audit dispatched." } });
+      send({ id: message.id, result: { stopReason: "end_turn" } });
+      return;
+    }
+    // Tool output only, no final message at all.
+    if (scenario === "task-tool-only") {
+      const sid = message.params.sessionId ?? "sess-1";
+      send({ method: "session/update", params: { sessionId: sid, update: { sessionUpdate: "tool_call", toolCallId: "b1", title: "Agent: Report", kind: "other", status: "in_progress" } } });
+      send({ method: "session/update", params: { sessionId: sid, update: { sessionUpdate: "tool_call_update", toolCallId: "b1", status: "completed", content: [{ type: "content", content: { text: "TOOL-ONLY-DELIVERABLE" } }] } } });
+      send({ id: message.id, result: { stopReason: "end_turn" } });
+      return;
+    }
+    // Clean end_turn that produced nothing usable — no message, no tools.
+    if (scenario === "task-empty") {
+      send({ id: message.id, result: { stopReason: "end_turn" } });
+      return;
+    }
+
     if (scenario === "unknown-request") {
       agentRequest("custom/not-a-real-method", {}, (response) => {
         observed.unknownResponse = response;
