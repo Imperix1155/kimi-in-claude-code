@@ -392,9 +392,16 @@ async function executeTaskRun(request) {
       prompt: request.prompt,
       defaultPrompt: resumeSessionId ? DEFAULT_CONTINUE_PROMPT : "",
       // KMP-24: read-only tasks get the policy preamble so a rejected shell
-      // call reads as policy, not the user cancelling. Reviews (write: false
-      // too) go through the review path, whose template has its own rules.
-      promptPreamble: request.write ? null : READ_ONLY_TASK_PREAMBLE,
+      // call reads as policy, not the user cancelling. Excluded: /kimi:review
+      // (review path, own template rules) and the stop-gate review, which
+      // runs read-only through THIS path but has a strict first-line
+      // ALLOW/BLOCK contract the preamble's "say so in your final answer"
+      // clause could break (Codex review 2026-07-30) — its template carries
+      // its own gate-consistent rejection wording instead.
+      promptPreamble:
+        request.write || String(request.prompt ?? "").includes(STOP_REVIEW_TASK_MARKER)
+          ? null
+          : READ_ONLY_TASK_PREAMBLE,
       write: request.write,
       model: request.model ?? null,
       resumeSessionId,

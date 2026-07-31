@@ -330,7 +330,11 @@ function buildAdversarialCollectionGuidance(options = {}) {
     return "Use the repository context below as primary evidence.";
   }
 
-  return "The repository context below is a lightweight summary. Inspect the target diff yourself with read-only git commands before finalizing findings.";
+  // Must stay consistent with the review template's tool_availability block:
+  // shell (and therefore git) is ALWAYS rejected in read-only reviews, so
+  // self-collect can only direct the model to its built-in file reads
+  // (KMP-26 — the old "git commands" wording wedged every >2-file review).
+  return "The repository context below is a lightweight summary listing the changed files. Shell and git commands are blocked by the read-only policy — do not attempt them. Read the changed files with your built-in file-reading tool before finalizing findings.";
 }
 
 export function collectReviewContext(cwd, target, options = {}) {

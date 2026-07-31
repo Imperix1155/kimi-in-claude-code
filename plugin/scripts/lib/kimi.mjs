@@ -647,8 +647,8 @@ export async function runKimiTurn(cwd, options = {}) {
       throw new Error("A prompt is required for this Kimi run.");
     }
     // Applied after prompt/defaultPrompt resolution so resumed turns get it
-    // too. Callers own the choice: the review prompt template carries its own
-    // tool_availability rules and must not be double-preambled.
+    // too. Callers own the choice: the review AND stop-gate templates carry
+    // their own tool_availability rules and must not be double-preambled.
     const prompt = options.promptPreamble ? `${options.promptPreamble}${basePrompt}` : basePrompt;
 
     const result = await runPromptTurn(client, { sessionId, prompt, onProgress: options.onProgress });

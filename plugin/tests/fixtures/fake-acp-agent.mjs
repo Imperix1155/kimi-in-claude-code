@@ -195,6 +195,14 @@ rl.on("line", (line) => {
     }
 
     if (scenario === "review-json") {
+      // KMP-24: the review path must never receive the generic task
+      // preamble — fail the review loudly if it leaks (wire-level pin).
+      const reviewPromptText = (message.params.prompt ?? []).map((block) => block?.text ?? "").join("");
+      if (reviewPromptText.includes("READ-ONLY task")) {
+        send({ method: "session/update", params: { sessionId: message.params.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: "generic task preamble leaked into the review prompt" } } } });
+        send({ id: message.id, result: { stopReason: "end_turn" } });
+        return;
+      }
       const review = {
         verdict: "needs-attention",
         summary: "Ship blocker: planted divide-by-zero found.",
@@ -223,11 +231,21 @@ rl.on("line", (line) => {
       // an expected ALLOW into a BLOCK the tests will catch.
       const promptText = (message.params.prompt ?? []).map((block) => block?.text ?? "").join("");
       const hasContext = promptText.includes("BEGIN-REPO-STATE-") && promptText.includes("END-REPO-STATE-");
+      // KMP-24/26: the stop-gate must NOT get the generic task preamble (its
+      // "say so in your final answer" clause conflicts with the first-line
+      // ALLOW/BLOCK contract); its own template carries gate-consistent
+      // rejection wording instead. Both asserted on the wire prompt.
+      const genericPreambleLeaked = promptText.includes("READ-ONLY task");
+      const hasGateRejectionRules = promptText.includes("A rejection never changes your job");
       const text = !hasContext
         ? "BLOCK: prompt arrived without the inlined repository state."
-        : scenario === "stop-gate-allow"
-          ? "ALLOW: previous turn made no code changes."
-          : "BLOCK: the planted bug from the previous turn is still unfixed.";
+        : genericPreambleLeaked
+          ? "BLOCK: generic task preamble leaked into the stop-gate prompt."
+          : !hasGateRejectionRules
+            ? "BLOCK: stop-gate template lost its rejection-policy wording."
+            : scenario === "stop-gate-allow"
+              ? "ALLOW: previous turn made no code changes."
+              : "BLOCK: the planted bug from the previous turn is still unfixed.";
       send({ method: "session/update", params: { sessionId: message.params.sessionId, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text } } } });
       send({ id: message.id, result: { stopReason: "end_turn" } });
       return;

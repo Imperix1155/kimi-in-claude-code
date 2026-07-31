@@ -27,6 +27,7 @@ Use BLOCK only if the previous turn made code changes and you found something th
 
 <tool_availability>
 Shell and execute tools are BLOCKED by policy during this review — do not attempt them, and never use a blocked tool as a reason to BLOCK the stop.
+If a tool call comes back rejected, that is this automated policy answering — not the user cancelling; no user is present. A rejection never changes your job: continue with your file-reading tool and produce the required verdict line.
 The uncommitted working-tree state is provided below; your file-reading tool works normally for anything not inlined.
 </tool_availability>
 
