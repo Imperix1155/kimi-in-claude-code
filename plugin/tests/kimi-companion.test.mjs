@@ -351,6 +351,36 @@ function pathToImport(relative) {
   shutdownBroker(env, cwd);
 }
 
+// 7d. KMP-24: read-only tasks carry the policy preamble so a rejected shell
+// call reads as automated policy, not the user cancelling; write tasks and
+// the user's own text stay untouched. Asserted on the prompt the agent
+// actually received (prompt-echo fixture), not on companion internals.
+{
+  const { cwd, env } = makeWorkspace("prompt-echo");
+  const readRun = runCli(["task", "--json", "verify the thing"], { env, cwd });
+  assert.equal(readRun.status, 0, readRun.stderr);
+  const readPrompt = JSON.parse(readRun.stdout).rawOutput;
+  assert.match(readPrompt, /READ-ONLY task/, "read-only task must carry the KMP-24 preamble");
+  assert.match(readPrompt, /NOT the user cancelling/, "preamble must name the rejection misread");
+  assert.match(readPrompt, /verify the thing$/, "user text must survive verbatim after the preamble");
+  assert.ok(readPrompt.indexOf("READ-ONLY task") < readPrompt.indexOf("verify the thing"), "preamble must precede the user text");
+
+  const writeRun = runCli(["task", "--write", "--json", "edit the thing"], { env, cwd });
+  assert.equal(writeRun.status, 0, writeRun.stderr);
+  const writePrompt = JSON.parse(writeRun.stdout).rawOutput;
+  assert.doesNotMatch(writePrompt, /READ-ONLY task/, "write task must NOT carry the preamble");
+  assert.match(writePrompt, /edit the thing$/);
+
+  // Promptless read-only resume: the preamble must compose with the
+  // DEFAULT_CONTINUE_PROMPT fallback, not replace or skip it.
+  const resumed = runCli(["task", "--resume-last", "--read-only", "--json"], { env, cwd });
+  assert.equal(resumed.status, 0, resumed.stderr);
+  const resumedPrompt = JSON.parse(resumed.stdout).rawOutput;
+  assert.match(resumedPrompt, /READ-ONLY task/, "read-only resume must carry the preamble");
+  assert.match(resumedPrompt, /Continue from the current session state/, "default continue prompt must survive");
+  shutdownBroker(env, cwd);
+}
+
 // 8. Externally killed worker: status must reconcile the record to failed
 // instead of reporting "running" forever, and cancel must then refuse.
 {

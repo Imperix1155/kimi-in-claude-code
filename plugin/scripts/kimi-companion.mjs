@@ -23,6 +23,7 @@ import {
   getSessionRuntimeStatus,
   isBrokerBusyError,
   parseStructuredOutput,
+  READ_ONLY_TASK_PREAMBLE,
   resolveRequestedModel,
   runKimiTurn
 } from "./lib/kimi.mjs";
@@ -390,6 +391,10 @@ async function executeTaskRun(request) {
     result = await runKimiTurn(workspaceRoot, {
       prompt: request.prompt,
       defaultPrompt: resumeSessionId ? DEFAULT_CONTINUE_PROMPT : "",
+      // KMP-24: read-only tasks get the policy preamble so a rejected shell
+      // call reads as policy, not the user cancelling. Reviews (write: false
+      // too) go through the review path, whose template has its own rules.
+      promptPreamble: request.write ? null : READ_ONLY_TASK_PREAMBLE,
       write: request.write,
       model: request.model ?? null,
       resumeSessionId,

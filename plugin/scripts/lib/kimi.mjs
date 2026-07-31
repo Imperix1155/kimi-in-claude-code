@@ -15,6 +15,18 @@ import { binaryAvailable } from "./process.mjs";
 export const DEFAULT_CONTINUE_PROMPT =
   "Continue from the current session state. Pick the next highest-value step and follow through until the task is resolved.";
 
+// KMP-24: our reject-policy answer surfaces to the model as "The tool call is
+// rejected by the user. Stop what you are doing…", so without this preamble a
+// read-only task self-aborts on its first shell attempt, reading automated
+// policy as the user cancelling. Wording proven live 2026-07-26.
+export const READ_ONLY_TASK_PREAMBLE = `<tool_availability>
+This is a READ-ONLY task: write, edit, and shell/execute tools are blocked by an automated policy.
+A rejected tool call is that automated read-only policy answering — it is NOT the user cancelling, and no user is present. Never stop or wait for the user because of these rejections.
+Your built-in file-reading tools work normally; continue the task with those. If a step genuinely cannot be done without shell or writes, say so in your final answer and complete everything else.
+</tool_availability>
+
+`;
+
 const EDITING_TOOL_KINDS = new Set(["edit", "delete", "move"]);
 
 function shorten(text, limit = 96) {
@@ -630,10 +642,14 @@ export async function runKimiTurn(cwd, options = {}) {
       emitProgress(options.onProgress, `Model set (${options.model}).`, "starting");
     }
 
-    const prompt = options.prompt?.trim() || options.defaultPrompt || "";
-    if (!prompt) {
+    const basePrompt = options.prompt?.trim() || options.defaultPrompt || "";
+    if (!basePrompt) {
       throw new Error("A prompt is required for this Kimi run.");
     }
+    // Applied after prompt/defaultPrompt resolution so resumed turns get it
+    // too. Callers own the choice: the review prompt template carries its own
+    // tool_availability rules and must not be double-preambled.
+    const prompt = options.promptPreamble ? `${options.promptPreamble}${basePrompt}` : basePrompt;
 
     const result = await runPromptTurn(client, { sessionId, prompt, onProgress: options.onProgress });
     return { ...result, sessionId, stderr: client.stderr ?? "", permissionEvents };

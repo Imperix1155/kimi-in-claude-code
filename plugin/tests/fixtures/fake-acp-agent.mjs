@@ -122,6 +122,15 @@ rl.on("line", (line) => {
     // A turn whose real deliverable lives in an "Agent" sub-agent tool call
     // (ACP wraps it as {type:"content", content:{text}}), with only a thin
     // final message. Reproduces the live 2026-07-22 output-loss bug.
+    if (scenario === "prompt-echo") {
+      // Echoes the exact prompt text received, so tests can assert what the
+      // companion actually sent (KMP-24 read-only preamble presence/absence).
+      const promptText = (message.params.prompt ?? []).map((block) => block?.text ?? "").join("");
+      send({ method: "session/update", params: { sessionId: message.params.sessionId ?? "sess-1", update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `PROMPT-ECHO:${promptText}` } } } });
+      send({ id: message.id, result: { stopReason: "end_turn" } });
+      return;
+    }
+
     if (scenario === "task-tool-content") {
       const sid = message.params.sessionId ?? "sess-1";
       const upd = (u) => send({ method: "session/update", params: { sessionId: sid, update: u } });

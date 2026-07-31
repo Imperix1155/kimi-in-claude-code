@@ -9,7 +9,7 @@ A Claude Code plugin that delegates code reviews and tasks to the Kimi Code CLI 
 ## Local Contracts
 
 - [`docs/PLAN.md`](./docs/PLAN.md) is the authoritative build plan — architecture, file-by-file buckets, milestone verify gates, locked design decisions, risks, positioning, portability roadmap. Re-read before any build work; update when a milestone lands or a decision flips.
-- [`docs/ROADMAP.md`](./docs/ROADMAP.md) is the work tracker (KMP-1…21 as checkboxes; the owner decided against a Linear board). Check items off when their verify criterion passes; discovered work gets a new `KMP-##` line under the owning epic — never tracked only in chat.
+- [`docs/ROADMAP.md`](./docs/ROADMAP.md) is the work tracker (`KMP-##` checkboxes; the owner decided against a Linear board). Check items off when their verify criterion passes; discovered work gets a new `KMP-##` line under the owning epic — never tracked only in chat.
 - Milestone order is strict: a milestone's verify gate must print green before the next starts (gates in PLAN §5).
 - The reference implementation is the locally installed codex plugin at `~/.claude/plugins/cache/openai-codex-plugin-cc/codex/1.0.4` (Apache-2.0) — copy freely; its attribution is preserved in [`NOTICE`](./NOTICE).
 - Keep [`README.md`](./README.md) status honest: it says pre-release until v1 actually ships.
