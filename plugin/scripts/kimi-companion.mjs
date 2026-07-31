@@ -402,6 +402,10 @@ async function executeTaskRun(request) {
         request.write || String(request.prompt ?? "").includes(STOP_REVIEW_TASK_MARKER)
           ? null
           : READ_ONLY_TASK_PREAMBLE,
+      // KMP-27: same opt-in surface as the preamble — plain read-only tasks
+      // only. The stop-gate keeps its strict single-turn ALLOW/BLOCK flow.
+      continueAfterRejectionAbort:
+        !request.write && !String(request.prompt ?? "").includes(STOP_REVIEW_TASK_MARKER),
       write: request.write,
       model: request.model ?? null,
       resumeSessionId,

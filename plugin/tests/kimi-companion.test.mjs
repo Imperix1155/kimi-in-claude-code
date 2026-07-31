@@ -381,6 +381,22 @@ function pathToImport(relative) {
   shutdownBroker(env, cwd);
 }
 
+// 7e. KMP-27: a read-only turn that ends silently after a policy rejection
+// gets exactly one continuation prompt on the same session, and the
+// recovered answer becomes the result (rejection evidence preserved).
+{
+  const { cwd, env } = makeWorkspace("reject-then-silent");
+  const run = runCli(["task", "--json", "probe something"], { env, cwd });
+  assert.equal(run.status, 0, `continuation task failed: ${run.stderr}`);
+  const payload = JSON.parse(run.stdout);
+  assert.match(payload.rawOutput, /CONTINUED-ANSWER/, "continuation answer must be the result");
+  assert.match(payload.rawOutput, /automated read-only policy answering/, "continuation prompt must carry the policy clarification");
+  assert.equal(payload.permissionEvents.length, 1);
+  assert.equal(payload.permissionEvents[0].decision, "reject");
+  assert.ok((payload.toolOutputs ?? []).some((t) => /rejected by the user/.test(t.text ?? "")), "first turn's rejection evidence must survive the merge");
+  shutdownBroker(env, cwd);
+}
+
 // 8. Externally killed worker: status must reconcile the record to failed
 // instead of reporting "running" forever, and cancel must then refuse.
 {

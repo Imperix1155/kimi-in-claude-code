@@ -122,6 +122,27 @@ rl.on("line", (line) => {
     // A turn whose real deliverable lives in an "Agent" sub-agent tool call
     // (ACP wraps it as {type:"content", content:{text}}), with only a thin
     // final message. Reproduces the live 2026-07-22 output-loss bug.
+    if (scenario === "reject-then-silent") {
+      // KMP-27: first prompt — attempt a tool, get rejected, end the turn
+      // with NO message (the live silent-abort shape). Second prompt (the
+      // companion's continuation) — deliver the answer, echoing the
+      // continuation text so tests can pin what was sent.
+      promptCount += 1;
+      const sid = message.params.sessionId ?? "sess-1";
+      if (promptCount === 1) {
+        agentRequest("session/request_permission", { sessionId: sid, options: [{ optionId: "ok", kind: "allow_once" }, { optionId: "no", kind: "reject_once" }] }, () => {
+          send({ method: "session/update", params: { sessionId: sid, update: { sessionUpdate: "tool_call", toolCallId: "sh1", title: "Shell: probe", kind: "execute", status: "in_progress" } } });
+          send({ method: "session/update", params: { sessionId: sid, update: { sessionUpdate: "tool_call_update", toolCallId: "sh1", status: "failed", content: [{ type: "content", content: { type: "text", text: "The tool call is rejected by the user." } }] } } });
+          send({ id: message.id, result: { stopReason: "end_turn" } });
+        });
+        return;
+      }
+      const continuationText = (message.params.prompt ?? []).map((block) => block?.text ?? "").join("");
+      send({ method: "session/update", params: { sessionId: sid, update: { sessionUpdate: "agent_message_chunk", content: { type: "text", text: `CONTINUED-ANSWER (got: ${continuationText})` } } } });
+      send({ id: message.id, result: { stopReason: "end_turn" } });
+      return;
+    }
+
     if (scenario === "prompt-echo") {
       // Echoes the exact prompt text received, so tests can assert what the
       // companion actually sent (KMP-24 read-only preamble presence/absence).

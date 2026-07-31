@@ -27,6 +27,12 @@ Your built-in file-reading tools work normally; continue the task with those and
 
 `;
 
+// KMP-27: even with the preamble, a live rejection's CLI text ("rejected by
+// the user — stop") can make the model end its turn with no answer. This is
+// the one-shot recovery prompt sent on the same session when that happens.
+export const REJECTION_CONTINUATION_PROMPT =
+  "Those tool rejections were the automated read-only policy answering — not the user; no user is present. Do not stop. Continue the task now using only your built-in file-reading tools and produce your final answer.";
+
 const EDITING_TOOL_KINDS = new Set(["edit", "delete", "move"]);
 
 function shorten(text, limit = 96) {
@@ -651,7 +657,41 @@ export async function runKimiTurn(cwd, options = {}) {
     // their own tool_availability rules and must not be double-preambled.
     const prompt = options.promptPreamble ? `${options.promptPreamble}${basePrompt}` : basePrompt;
 
-    const result = await runPromptTurn(client, { sessionId, prompt, onProgress: options.onProgress });
+    let result = await runPromptTurn(client, { sessionId, prompt, onProgress: options.onProgress });
+
+    // KMP-27: rejection-abort recovery. Deterministic trigger — at least one
+    // rejected permission this turn AND no agent message at all (the silent
+    // abort leaves only the rejection tool output). One continuation on the
+    // same session, never a loop. Callers opt in alongside the preamble.
+    if (
+      options.continueAfterRejectionAbort &&
+      !result.agentMessage.trim() &&
+      permissionEvents.some((event) => event.decision !== "allow")
+    ) {
+      emitProgress(
+        options.onProgress,
+        "Turn ended silently after policy rejections — sending one continuation prompt.",
+        "investigating"
+      );
+      const followUp = await runPromptTurn(client, {
+        sessionId,
+        prompt: REJECTION_CONTINUATION_PROMPT,
+        onProgress: options.onProgress
+      });
+      // Merge so the first turn's tool activity (including the rejection
+      // evidence) stays visible alongside the recovered answer.
+      result = {
+        ...followUp,
+        toolCalls: [...result.toolCalls, ...followUp.toolCalls],
+        toolOutputs: [...result.toolOutputs, ...followUp.toolOutputs],
+        reasoning: [result.reasoning, followUp.reasoning].filter(Boolean).join("\n\n"),
+        touchedFiles: [...new Set([...result.touchedFiles, ...followUp.touchedFiles])],
+        unknownUpdateKinds: [...new Set([...result.unknownUpdateKinds, ...followUp.unknownUpdateKinds])],
+        hasContent: result.hasContent || followUp.hasContent,
+        plan: followUp.plan.length > 0 ? followUp.plan : result.plan
+      };
+    }
+
     return { ...result, sessionId, stderr: client.stderr ?? "", permissionEvents };
   }, clientOptions);
 }
