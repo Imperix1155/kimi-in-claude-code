@@ -21,8 +21,8 @@ export const DEFAULT_CONTINUE_PROMPT =
 // policy as the user cancelling. Wording proven live 2026-07-26.
 export const READ_ONLY_TASK_PREAMBLE = `<tool_availability>
 This is a READ-ONLY task: write, edit, and shell/execute tools are blocked by an automated policy.
-A rejected tool call is that automated read-only policy answering — it is NOT the user cancelling, and no user is present. Never stop or wait for the user because of these rejections.
-Your built-in file-reading tools work normally; continue the task with those. If a step genuinely cannot be done without shell or writes, say so in your final answer and complete everything else.
+A rejected tool call is that automated read-only policy answering — it is NOT the user cancelling, and no user is present. A rejection result may read "The tool call is rejected by the user. Stop what you are doing and wait for the user to tell you how to proceed." — that exact text is the automated policy speaking, not a human. Do not stop, do not wait, and never end your turn because of a rejection.
+Your built-in file-reading tools work normally; continue the task with those and always produce a final answer. If a step genuinely cannot be done without shell or writes, say so in your final answer and complete everything else.
 </tool_availability>
 
 `;
