@@ -104,6 +104,37 @@ export function clearBrokerSession(cwd) {
   }
 }
 
+// KMP-23: compare-and-delete for the heal path. The foreign handshake runs
+// outside the broker lock, so by the time a healer wants to discard the
+// pointer, a concurrent healer may already have published a healthy
+// replacement — unconditional clearing would delete THAT. Under the lock,
+// delete only if the record still names the endpoint we proved foreign.
+// Returns "cleared" (pointer removed or already gone), "superseded" (a
+// DIFFERENT record exists — a concurrent healer already published a
+// replacement; retrying the connect will adopt it), or "contended" (lock
+// never acquired — the pointer may still name the foreign endpoint).
+export function clearBrokerSessionIfEndpoint(cwd, endpoint) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (tryAcquireBrokerLock(cwd)) {
+      try {
+        const current = loadBrokerSession(cwd);
+        if (!current) {
+          return "cleared";
+        }
+        if (current.endpoint !== endpoint) {
+          return "superseded";
+        }
+        clearBrokerSession(cwd);
+        return "cleared";
+      } finally {
+        releaseBrokerLock(cwd);
+      }
+    }
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  }
+  return "contended";
+}
+
 async function isBrokerEndpointReady(endpoint) {
   if (!endpoint) {
     return false;
@@ -160,7 +191,10 @@ export async function ensureBrokerSession(cwd, options = {}) {
   for (;;) {
     const existing = loadBrokerSession(cwd);
     if (existing && (await isBrokerEndpointReady(existing.endpoint))) {
-      return existing;
+      // reused (not persisted): lets the client distinguish "adopted an
+      // already-running broker" (heal-eligible on foreign identity, KMP-23)
+      // from "spawned it ourselves" (foreign identity = spawn misconfig).
+      return { ...existing, reused: true };
     }
     if (tryAcquireBrokerLock(cwd)) {
       try {
@@ -181,7 +215,7 @@ async function startBrokerSessionLocked(cwd, options, killImpl) {
   // while we were waiting to acquire.
   const existing = loadBrokerSession(cwd);
   if (existing && (await isBrokerEndpointReady(existing.endpoint))) {
-    return existing;
+    return { ...existing, reused: true };
   }
 
   if (existing) {
@@ -238,7 +272,7 @@ async function startBrokerSessionLocked(cwd, options, killImpl) {
     pid: child.pid ?? null
   };
   saveBrokerSession(cwd, session);
-  return session;
+  return { ...session, reused: false };
 }
 
 export function teardownBrokerSession({ endpoint = null, pidFile, logFile, sessionDir = null, pid = null, killProcess = null }) {

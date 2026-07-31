@@ -8,8 +8,10 @@ import process from "node:process";
 import { fileURLToPath } from "node:url";
 import { AcpClient, BROKER_BUSY_RPC_CODE } from "../scripts/lib/acp-client.mjs";
 import {
+  clearBrokerSessionIfEndpoint,
   ensureBrokerSession,
   loadBrokerSession,
+  saveBrokerSession,
   sendBrokerShutdown,
   waitForBrokerEndpoint
 } from "../scripts/lib/broker-lifecycle.mjs";
@@ -350,6 +352,195 @@ await withBroker("basic", async (session, cwd) => {
     }
   }
   await sendBrokerShutdown(recorded.endpoint).catch(() => {});
+}
+
+// KMP-23a. Foreign-broker heal: a recorded broker serving a NON-Kimi agent
+// (the codex-collision shape) must be refused on identity, the pointer
+// discarded, and the connect must succeed via a fresh broker — while the
+// foreign broker (not ours) stays alive.
+{
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "kmc-test-"));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "kmc-data-"));
+  const savedEnv = { data: process.env.KIMI_COMPANION_DATA, spawn: process.env.KIMI_COMPANION_AGENT_SPAWN };
+  process.env.KIMI_COMPANION_DATA = dataDir;
+  // The foreign broker is simulated as the real incident shape: a live
+  // socket that answers initialize with a NON-Kimi identity (our own broker
+  // now refuses to even start against a foreign agent, so it cannot play
+  // this role). Inline line-JSON server, like the codex app-server.
+  const net = await import("node:net");
+  const foreignSock = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "kmc-frn-")), "foreign.sock");
+  const foreignServer = net.createServer((socket) => {
+    socket.setEncoding("utf8");
+    let buffer = "";
+    socket.on("data", (chunk) => {
+      buffer += chunk;
+      let index;
+      while ((index = buffer.indexOf("\n")) !== -1) {
+        const line = buffer.slice(0, index); buffer = buffer.slice(index + 1);
+        try {
+          const message = JSON.parse(line);
+          const result = message.method === "initialize"
+            ? { result: { protocolVersion: 1, agentInfo: { name: "Codex App Server", version: "0.0.0" } } }
+            : { error: { code: -32601, message: "unknown variant" } };
+          socket.write(`${JSON.stringify({ id: message.id, ...result })}\n`);
+        } catch {}
+      }
+    });
+  });
+  await new Promise((resolve) => foreignServer.listen(foreignSock, resolve));
+  const foreignEndpoint = `unix:${foreignSock}`;
+  try {
+    saveBrokerSession(cwd, { endpoint: foreignEndpoint, pid: null });
+
+    process.env.KIMI_COMPANION_AGENT_SPAWN = JSON.stringify({ command: process.execPath, args: [FIXTURE, "basic"] });
+    const client = await AcpClient.connect(cwd, { useBroker: true, connectTimeoutMs: 10_000 });
+    assert.equal(client.agentInfo?.agentInfo?.name, "Kimi Code CLI", "healed connect must reach a Kimi-identified agent");
+    const healed = loadBrokerSession(cwd);
+    assert.ok(healed?.endpoint, "a fresh broker must be recorded after the heal");
+    assert.notEqual(healed.endpoint, foreignEndpoint, "broker.json must point away from the foreign broker");
+    assert.equal(foreignServer.listening, true, "the foreign broker must NOT be killed — it is not ours");
+    const s = await client.request("session/new", { cwd, mcpServers: [] });
+    assert.ok(s.sessionId, "healed broker must serve sessions");
+    await client.close();
+  } finally {
+    // Teardown OUTSIDE the assertions: a failing assert must not leak the
+    // broker into later suites' sweeps (advisor 2026-07-30 — observed live
+    // as a cross-suite flake). Endpoint shutdown, then pid fallback.
+    foreignServer.close();
+    const recorded = loadBrokerSession(cwd);
+    if (recorded?.endpoint && recorded.endpoint !== foreignEndpoint) {
+      await sendBrokerShutdown(recorded.endpoint).catch(() => {});
+    }
+    if (Number.isFinite(recorded?.pid)) {
+      try { process.kill(recorded.pid, "SIGKILL"); } catch {}
+    }
+    process.env.KIMI_COMPANION_DATA = savedEnv.data;
+    if (savedEnv.data === undefined) delete process.env.KIMI_COMPANION_DATA;
+    process.env.KIMI_COMPANION_AGENT_SPAWN = savedEnv.spawn;
+    if (savedEnv.spawn === undefined) delete process.env.KIMI_COMPANION_AGENT_SPAWN;
+  }
+}
+
+// KMP-23b. Freshly-SPAWNED foreign agent (bad spawn override / PATH): must
+// fail loudly naming the cause — no heal loop, no broker left behind.
+{
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "kmc-test-"));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "kmc-data-"));
+  const savedData = process.env.KIMI_COMPANION_DATA;
+  process.env.KIMI_COMPANION_DATA = dataDir;
+  try {
+    // The broker's own internal client now validates identity too, so a
+    // foreign spawn dies at broker startup (generic start failure, reason in
+    // the broker log) — or, if it survives to the handshake, with the
+    // explicit foreign message. Either way: loud, and no pointer left.
+    await assert.rejects(
+      () => AcpClient.connect(cwd, {
+        useBroker: true,
+        connectTimeoutMs: 10_000,
+        brokerOptions: { extraBrokerArgs: agentSpawnArgs("foreign-agent") }
+      }),
+      (error) => /foreign broker state|agent command itself is wrong|identifies as|Failed to start the shared agent broker/.test(String(error?.message)),
+      "fresh foreign spawn must fail loudly"
+    );
+    assert.equal(loadBrokerSession(cwd), null, "no broker pointer may survive a fresh-foreign failure");
+  } finally {
+    process.env.KIMI_COMPANION_DATA = savedData;
+    if (savedData === undefined) delete process.env.KIMI_COMPANION_DATA;
+  }
+}
+
+// KMP-23c. State namespacing + env precedence: KIMI_COMPANION_DATA outranks
+// CLAUDE_PLUGIN_DATA, and both roots gain the /kimi/state/ namespace so our
+// files can never collide with another plugin's <data>/state/<slug>.
+{
+  const { resolveStateDir } = await import("../scripts/lib/state.mjs");
+  const saved = { kimi: process.env.KIMI_COMPANION_DATA, claude: process.env.CLAUDE_PLUGIN_DATA };
+  try {
+    process.env.KIMI_COMPANION_DATA = "/tmp/kmc-ours";
+    process.env.CLAUDE_PLUGIN_DATA = "/tmp/kmc-theirs";
+    const preferred = resolveStateDir(process.cwd());
+    assert.ok(preferred.startsWith(path.join("/tmp/kmc-ours", "kimi", "state")), `KIMI_COMPANION_DATA must win and be namespaced, got ${preferred}`);
+    delete process.env.KIMI_COMPANION_DATA;
+    const fallback = resolveStateDir(process.cwd());
+    assert.ok(fallback.startsWith(path.join("/tmp/kmc-theirs", "kimi", "state")), `CLAUDE_PLUGIN_DATA fallback must be namespaced, got ${fallback}`);
+  } finally {
+    for (const [key, value] of [["KIMI_COMPANION_DATA", saved.kimi], ["CLAUDE_PLUGIN_DATA", saved.claude]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
+}
+
+// KMP-23d. Compare-and-delete: a healer holding a STALE foreign endpoint
+// must not clobber a newer healthy pointer published by a concurrent healer.
+{
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "kmc-test-"));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "kmc-data-"));
+  const savedData = process.env.KIMI_COMPANION_DATA;
+  process.env.KIMI_COMPANION_DATA = dataDir;
+  try {
+    saveBrokerSession(cwd, { endpoint: "unix:/tmp/kmc-new-healthy.sock", pid: null });
+    assert.equal(clearBrokerSessionIfEndpoint(cwd, "unix:/tmp/kmc-old-foreign.sock"), "superseded", "stale-endpoint clear must refuse");
+    assert.equal(loadBrokerSession(cwd)?.endpoint, "unix:/tmp/kmc-new-healthy.sock", "the newer pointer must survive");
+    assert.equal(clearBrokerSessionIfEndpoint(cwd, "unix:/tmp/kmc-new-healthy.sock"), "cleared", "matching-endpoint clear must proceed");
+    assert.equal(loadBrokerSession(cwd), null, "matching clear must remove the pointer");
+    assert.equal(clearBrokerSessionIfEndpoint(cwd, "unix:/tmp/kmc-anything.sock"), "cleared", "already-gone counts as cleared");
+  } finally {
+    process.env.KIMI_COMPANION_DATA = savedData;
+    if (savedData === undefined) delete process.env.KIMI_COMPANION_DATA;
+  }
+}
+
+// KMP-23e. Legacy-state migration: state at the OLD <data>/state/<slug> path
+// moves into the namespaced dir — but ONLY from a data dir whose basename
+// identifies as ours (kimi-*), preserving the review-gate flag and
+// rewriting job file paths. A foreign-named dir must never be adopted.
+{
+  const { resolveStateDir } = await import("../scripts/lib/state.mjs");
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "kmc-test-"));
+  const saved = { kimi: process.env.KIMI_COMPANION_DATA, claude: process.env.CLAUDE_PLUGIN_DATA };
+  try {
+    // Derive the workspace slug with a throwaway data dir (no legacy there).
+    const throwaway = fs.mkdtempSync(path.join(os.tmpdir(), "kmc-data-"));
+    process.env.KIMI_COMPANION_DATA = throwaway;
+    delete process.env.CLAUDE_PLUGIN_DATA;
+    const slugDirName = path.basename(resolveStateDir(cwd));
+
+    // Trusted kimi-* data dir with legacy state: must migrate.
+    const trustedParent = fs.mkdtempSync(path.join(os.tmpdir(), "kmc-mig-"));
+    const trustedData = path.join(trustedParent, "kimi-testdata");
+    const legacyDir = path.join(trustedData, "state", slugDirName);
+    fs.mkdirSync(path.join(legacyDir, "jobs"), { recursive: true });
+    const legacyLog = path.join(legacyDir, "jobs", "job-1.log");
+    fs.writeFileSync(legacyLog, "old log\n");
+    fs.writeFileSync(path.join(legacyDir, "state.json"), JSON.stringify({
+      version: 1,
+      config: { stopReviewGate: true },
+      jobs: [{ id: "job-1", logFile: legacyLog, updatedAt: "2026-01-01T00:00:00Z" }]
+    }));
+    process.env.KIMI_COMPANION_DATA = trustedData;
+    const migratedDir = resolveStateDir(cwd);
+    assert.ok(migratedDir.includes(path.join("kimi", "state")), "migrated dir must be namespaced");
+    const migratedState = JSON.parse(fs.readFileSync(path.join(migratedDir, "state.json"), "utf8"));
+    assert.equal(migratedState.config.stopReviewGate, true, "the enabled review gate must survive the upgrade");
+    assert.equal(migratedState.jobs[0].logFile, path.join(migratedDir, "jobs", "job-1.log"), "job logFile must be rewritten to the new path");
+    assert.ok(fs.existsSync(migratedState.jobs[0].logFile), "the log file itself must have moved");
+    assert.equal(fs.existsSync(legacyDir), false, "legacy dir must be gone after migration");
+
+    // Foreign-named data dir with legacy state: must NOT be adopted.
+    const foreignParent = fs.mkdtempSync(path.join(os.tmpdir(), "kmc-mig-"));
+    const foreignData = path.join(foreignParent, "codex-testdata");
+    const foreignLegacy = path.join(foreignData, "state", slugDirName);
+    fs.mkdirSync(foreignLegacy, { recursive: true });
+    fs.writeFileSync(path.join(foreignLegacy, "state.json"), JSON.stringify({ version: 1, config: { stopReviewGate: true }, jobs: [] }));
+    process.env.KIMI_COMPANION_DATA = foreignData;
+    const foreignResolved = resolveStateDir(cwd);
+    assert.equal(fs.existsSync(path.join(foreignResolved, "state.json")), false, "foreign-named data dir must never be adopted");
+    assert.equal(fs.existsSync(foreignLegacy), true, "foreign legacy state must be left untouched");
+  } finally {
+    for (const [key, value] of [["KIMI_COMPANION_DATA", saved.kimi], ["CLAUDE_PLUGIN_DATA", saved.claude]]) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+  }
 }
 
 console.log("ACP-BROKER-TESTS-GREEN");

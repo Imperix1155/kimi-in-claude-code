@@ -31,12 +31,15 @@ process.on("exit", () => {
 
 function makeWorkspace(scenario) {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "kmc-hook-"));
-  const pluginData = fs.mkdtempSync(path.join(os.tmpdir(), "kmc-hookdata-"));
+  const pluginData = fs.mkdtempSync(path.join(os.tmpdir(), "kimi-hookdata-"));
   const env = {
     ...process.env,
     KIMI_COMPANION_AGENT_SPAWN: JSON.stringify({ command: process.execPath, args: [FIXTURE, scenario] }),
     CLAUDE_PLUGIN_DATA: pluginData
   };
+  // KMP-23: see kimi-companion.test.mjs makeEnv — isolation would silently
+  // break in a shell where the session hook exported KIMI_COMPANION_DATA.
+  delete env.KIMI_COMPANION_DATA;
   cleanupTargets.push({ env, cwd });
   return { cwd, env };
 }
@@ -168,6 +171,27 @@ const stopInput = (cwd, extra = {}) =>
   assert.equal(hook.status, 0, hook.stderr);
   const exported = fs.readFileSync(envFile, "utf8");
   assert.match(exported, /export KIMI_COMPANION_SESSION_ID='sess-abc'/);
+  // KMP-23 primary leg (advisor 2026-07-30: previously unpinned — a revert
+  // to exporting generic CLAUDE_PLUGIN_DATA kept all suites green): the hook
+  // must export OUR env name, carrying the kimi-* data dir it was given.
+  assert.match(exported, /export KIMI_COMPANION_DATA='[^']*kimi-hookdata[^']*'/);
+  assert.doesNotMatch(exported, /export CLAUDE_PLUGIN_DATA=/, "the generic name must no longer be exported session-wide");
+}
+
+// 5b. SessionStart with a FOREIGN-named data dir (an earlier foreign hook's
+// export already reached this process): must NOT capture it as ours.
+{
+  const { cwd, env } = makeWorkspace("basic");
+  const envFile = path.join(cwd, "claude-env");
+  fs.writeFileSync(envFile, "", "utf8");
+  const foreignData = fs.mkdtempSync(path.join(os.tmpdir(), "codex-hookdata-"));
+  const hook = run(LIFECYCLE_HOOK, ["SessionStart"], {
+    env: { ...env, CLAUDE_PLUGIN_DATA: foreignData, CLAUDE_ENV_FILE: envFile },
+    cwd,
+    input: JSON.stringify({ session_id: "sess-frn", cwd })
+  });
+  assert.equal(hook.status, 0, hook.stderr);
+  assert.doesNotMatch(fs.readFileSync(envFile, "utf8"), /KIMI_COMPANION_DATA/, "a foreign-named data dir must not be captured");
 }
 
 // 6. SessionEnd: shuts the workspace broker down, clears its state record,

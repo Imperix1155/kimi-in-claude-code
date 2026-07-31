@@ -6,6 +6,12 @@ import path from "node:path";
 import { resolveWorkspaceRoot } from "./workspace.mjs";
 
 const STATE_VERSION = 1;
+// KMP-23: KIMI_COMPANION_DATA is our own session export (set by the
+// session-lifecycle hook) and always wins. CLAUDE_PLUGIN_DATA is the
+// harness-provided per-plugin dir — but it leaks across plugins at the
+// session level (the codex plugin's hook exports ITS dir to every process),
+// so it is only a fallback for contexts our hook never reached.
+const KIMI_DATA_ENV = "KIMI_COMPANION_DATA";
 const PLUGIN_DATA_ENV = "CLAUDE_PLUGIN_DATA";
 const FALLBACK_STATE_ROOT_DIR = path.join(os.tmpdir(), "kimi-companion");
 const STATE_FILE_NAME = "state.json";
@@ -26,6 +32,79 @@ function defaultState() {
   };
 }
 
+// One migration attempt per resolved dir per process — resolveStateDir is
+// called on every state read and must stay cheap after the first check.
+const migrationAttempted = new Set();
+
+// KMP-23 upgrade path: state used to live at <data>/state/<slug>. Migrate it
+// into the namespaced dir ONLY from a data dir whose basename identifies as
+// OURS (harness-assigned "kimi-<marketplace>") — a leaked codex dir also has
+// a state/<slug> with identical filenames and near-identical schema, and
+// silently adopting it would import the very contamination KMP-23 removes.
+// Migration preserves the stop-review-gate flag (a user-enabled safety gate
+// must not silently turn off on upgrade) and job history, rewriting each
+// job's absolute logFile path to the new location.
+function migrateLegacyStateDir(newDir, slugDirName) {
+  if (migrationAttempted.has(newDir)) {
+    return;
+  }
+  migrationAttempted.add(newDir);
+  if (fs.existsSync(newDir)) {
+    return;
+  }
+  for (const envName of [KIMI_DATA_ENV, PLUGIN_DATA_ENV]) {
+    const dataDir = process.env[envName];
+    if (!dataDir || !/^kimi-/.test(path.basename(dataDir))) {
+      continue;
+    }
+    const legacyDir = path.join(dataDir, "state", slugDirName);
+    if (!fs.existsSync(legacyDir)) {
+      continue;
+    }
+    try {
+      fs.mkdirSync(path.dirname(newDir), { recursive: true });
+      fs.renameSync(legacyDir, newDir);
+    } catch (error) {
+      // A concurrent process may have migrated first (rename EEXIST/ENOENT);
+      // anything else is worth a visible warning — a silent failure here
+      // silently disables a user-enabled review gate (Kimi review 2026-07-30).
+      if (error?.code !== "EEXIST" && error?.code !== "ENOENT") {
+        process.stderr.write(`[kimi-companion] legacy state migration failed (${error?.message}); continuing with fresh state at ${newDir}\n`);
+      }
+      return;
+    }
+    try {
+      // Pre-fix broker.json was a SHARED file both plugins wrote — it may
+      // name the codex plugin's live broker and pid. Broker state is
+      // ephemeral; NEVER import it into the namespace where our
+      // unhealthy-pointer teardown kills recorded pids (Kimi review
+      // 2026-07-30: that path killed foreign brokers via migrated records).
+      for (const ephemeral of ["broker.json", "broker.lock", "state.lock"]) {
+        fs.rmSync(path.join(newDir, ephemeral), { recursive: true, force: true });
+      }
+      const stateFile = path.join(newDir, STATE_FILE_NAME);
+      if (fs.existsSync(stateFile)) {
+        const parsed = JSON.parse(fs.readFileSync(stateFile, "utf8"));
+        const legacyPrefix = legacyDir.endsWith(path.sep) ? legacyDir : legacyDir + path.sep;
+        for (const job of parsed.jobs ?? []) {
+          for (const key of ["logFile", "jobFile"]) {
+            if (typeof job[key] === "string" && job[key].startsWith(legacyPrefix)) {
+              job[key] = path.join(newDir, path.relative(legacyDir, job[key]));
+            }
+          }
+        }
+        fs.writeFileSync(stateFile, `${JSON.stringify(parsed, null, 2)}\n`, "utf8");
+      }
+    } catch (error) {
+      // The rename already happened; a failed rewrite leaves stale absolute
+      // job paths — degraded but functional (result/log reads report
+      // missing). Say so instead of hiding it.
+      process.stderr.write(`[kimi-companion] migrated state at ${newDir} but could not rewrite job paths (${error?.message})\n`);
+    }
+    return;
+  }
+}
+
 export function resolveStateDir(cwd) {
   const workspaceRoot = resolveWorkspaceRoot(cwd);
   let canonicalWorkspaceRoot = workspaceRoot;
@@ -38,9 +117,16 @@ export function resolveStateDir(cwd) {
   const slugSource = path.basename(workspaceRoot) || "workspace";
   const slug = slugSource.replace(/[^a-zA-Z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "workspace";
   const hash = createHash("sha256").update(canonicalWorkspaceRoot).digest("hex").slice(0, 16);
-  const pluginDataDir = process.env[PLUGIN_DATA_ENV];
-  const stateRoot = pluginDataDir ? path.join(pluginDataDir, "state") : FALLBACK_STATE_ROOT_DIR;
-  return path.join(stateRoot, `${slug}-${hash}`);
+  const dataDir = process.env[KIMI_DATA_ENV] || process.env[PLUGIN_DATA_ENV];
+  // The extra "kimi" segment namespaces our state INSIDE whatever data dir
+  // we land in: even when the leaked codex dir is all we have, our
+  // state/broker files can never collide with the codex companion's
+  // identically-named files at <data>/state/<slug> (KMP-23).
+  const stateRoot = dataDir ? path.join(dataDir, "kimi", "state") : FALLBACK_STATE_ROOT_DIR;
+  const slugDirName = `${slug}-${hash}`;
+  const stateDir = path.join(stateRoot, slugDirName);
+  migrateLegacyStateDir(stateDir, slugDirName);
+  return stateDir;
 }
 
 export function resolveStateFile(cwd) {

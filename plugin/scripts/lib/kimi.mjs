@@ -359,7 +359,9 @@ export function getKimiAvailability(cwd) {
   const profile = getAgentProfile();
   // Deeper probes (acp --help, known-good version drift) belong to the
   // setup command (KMP-12); the ACP handshake itself is the real check.
-  return binaryAvailable(profile.probe.command, profile.probe.args, { cwd });
+  // Bounded (KMP-25): this spawnSync runs on EVERY turn — a wedged binary
+  // must never hang the caller forever.
+  return binaryAvailable(profile.probe.command, profile.probe.args, { cwd, timeout: SETUP_PROBE_TIMEOUT_MS });
 }
 
 export function getSessionRuntimeStatus(env = process.env, cwd = process.cwd()) {

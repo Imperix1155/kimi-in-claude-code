@@ -20,11 +20,16 @@ const deadman = setTimeout(() => {
 deadman.unref?.();
 
 function makeEnv(scenario, pluginData) {
-  return {
+  const env = {
     ...process.env,
     KIMI_COMPANION_AGENT_SPAWN: JSON.stringify({ command: process.execPath, args: [FIXTURE, scenario] }),
     CLAUDE_PLUGIN_DATA: pluginData
   };
+  // KMP-23: KIMI_COMPANION_DATA outranks CLAUDE_PLUGIN_DATA in state.mjs; a
+  // developer shell where the session hook exported it would silently break
+  // test isolation (tests writing into REAL plugin data).
+  delete env.KIMI_COMPANION_DATA;
+  return env;
 }
 
 function runCli(args, { env, cwd }) {

@@ -66,7 +66,16 @@ rl.on("line", (line) => {
       // Never answer: exercises the broker-startup-timeout teardown path.
       return;
     }
-    send({ id: message.id, result: { protocolVersion: 1 } });
+    if (scenario === "foreign-agent") {
+      // KMP-23: an ACP-speaking broker/agent that is NOT Kimi (the codex
+      // app-server also answers initialize). Identity validation must
+      // refuse it before any session/* request dies downstream.
+      send({ id: message.id, result: { protocolVersion: 1, agentInfo: { name: "Codex App Server", version: "0.0.0" } } });
+      return;
+    }
+    // Mirrors live kimi 1.49.0: identity validation (KMP-23) requires the
+    // agentInfo block on every healthy handshake.
+    send({ id: message.id, result: { protocolVersion: 1, agentInfo: { name: "Kimi Code CLI", version: "0.0.0-fake" } } });
     return;
   }
 

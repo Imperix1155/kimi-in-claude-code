@@ -18,12 +18,13 @@ A Claude Code plugin that delegates code reviews and tasks to the Kimi Code CLI 
 
 - The read-only guarantee for reviews is enforced by OUR permission handler (auto-reject `session/request_permission`), not by Kimi — never assume a Kimi-side sandbox exists.
 - ACP is bidirectional: every agent→client request must be answered or the turn hangs. Unknown requests get JSON-RPC `-32601`.
+- State lives at `<data>/kimi/state/<workspace-slug>` where `<data>` is `KIMI_COMPANION_DATA` (our session-hook export, always wins) falling back to `CLAUDE_PLUGIN_DATA` (KMP-23: the generic name leaks across plugins session-wide — the codex hook exports ITS dir — so never export or trust it as ours). A live socket at a recorded broker endpoint proves nothing about WHOSE broker it is: brokered handshakes validate `agentInfo.name === "Kimi Code CLI"` fail-closed, heal once on a reused-foreign broker (compare-and-delete under the broker lock — discard pointer, respawn; never kill the foreign process), and fail loudly on a freshly-spawned foreign agent (both transports validate). Legacy pre-namespace state migrates only from kimi-*-named data dirs, excluding ephemeral broker.json/locks; the hook applies the same basename guard before exporting.
 
 ## Verification
 
 - `node spike/acp-spike.mjs` must print `SPIKE-GREEN` — proves the live ACP loop (requires `kimi login`; logged-out state fails at `session/new` with `-32000`). Also the regression check after any `kimi` CLI upgrade. (Spike stays at the repo root.)
 - Deterministic suites under `plugin/tests/`, against the scripted fake agent (no login needed), each printing its `*-GREEN` sentinel: `node plugin/tests/acp-client.test.mjs`, `node plugin/tests/kimi.test.mjs`, `node plugin/tests/acp-broker.test.mjs`, `node plugin/tests/kimi-companion.test.mjs`, `node plugin/tests/hooks.test.mjs`, `node plugin/tests/render.test.mjs`, `node plugin/tests/plugin-surface.test.mjs`. The companion/hooks suites drive real CLI/hook child processes and end with their own leak sweeps. Run all seven after any change under `plugin/scripts/` or the hook scripts. After them, the suites' own leak sweeps count only TEST processes (fake agents, and brokers with a test-workspace cwd or the `--agent-spawn` flag) — real installed-plugin brokers on the machine are ignored.
-- Test seam: `KIMI_COMPANION_AGENT_SPAWN` (JSON `{command, args}`) swaps the spawned agent for the scripted fake in every profile resolution; `CLAUDE_PLUGIN_DATA` isolates job/broker state per test workspace.
+- Test seam: `KIMI_COMPANION_AGENT_SPAWN` (JSON `{command, args}`) swaps the spawned agent for the scripted fake in every profile resolution; `CLAUDE_PLUGIN_DATA` isolates job/broker state per test workspace — but `KIMI_COMPANION_DATA` outranks it (KMP-23), so every test env builder must `delete env.KIMI_COMPANION_DATA` or isolation silently breaks in a shell where the session hook exported it.
 
 ## Child DOX Index
 

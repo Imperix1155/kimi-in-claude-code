@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import fs from "node:fs";
+import path from "node:path";
 import process from "node:process";
 
 import { terminateProcessTree } from "./lib/process.mjs";
@@ -87,7 +88,17 @@ function otherSessionsActive(cwd, sessionId) {
 
 function handleSessionStart(input) {
   appendEnvVar(SESSION_ID_ENV, input.session_id);
-  appendEnvVar(PLUGIN_DATA_ENV, process.env[PLUGIN_DATA_ENV]);
+  // KMP-23: export under OUR name, not the generic CLAUDE_PLUGIN_DATA — the
+  // codex plugin's hook exports the same generic name session-wide, and
+  // whichever hook runs last used to hijack every raw-shell companion call
+  // into the other plugin's data dir. KIMI_COMPANION_DATA wins in state.mjs.
+  // Basename guard: if an earlier foreign hook's export already reached this
+  // process, capturing it would pin our state inside THEIR dir for the whole
+  // session — skip instead (state.mjs falls back per-invocation).
+  const hookDataDir = process.env[PLUGIN_DATA_ENV];
+  if (hookDataDir && /^kimi-/.test(path.basename(hookDataDir))) {
+    appendEnvVar("KIMI_COMPANION_DATA", hookDataDir);
+  }
 }
 
 async function handleSessionEnd(input) {

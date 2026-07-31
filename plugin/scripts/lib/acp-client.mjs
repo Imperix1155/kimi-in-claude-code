@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import readline from "node:readline";
 import { getAgentProfile } from "./agent-profile.mjs";
 import { parseBrokerEndpoint } from "./broker-endpoint.mjs";
-import { ensureBrokerSession, loadBrokerSession, waitForBrokerEndpoint } from "./broker-lifecycle.mjs";
+import { clearBrokerSessionIfEndpoint, ensureBrokerSession, loadBrokerSession, teardownBrokerSession, waitForBrokerEndpoint } from "./broker-lifecycle.mjs";
 import { terminateProcessTree } from "./process.mjs";
 
 export const BROKER_ENDPOINT_ENV = "KIMI_COMPANION_BROKER_ENDPOINT";
@@ -294,6 +294,17 @@ class SpawnedAcpClient extends AcpClientBase {
       protocolVersion: this.profile.protocolVersion,
       clientCapabilities: this.profile.clientCapabilities
     });
+
+    // KMP-23 (Kimi review 2026-07-30): same fail-closed identity check as
+    // the broker transport — a spawn override or hijacked PATH serving a
+    // foreign ACP binary must fail at the handshake, not mid-turn.
+    if (this.profile.isForeignAgentInfo?.(this.agentInfo)) {
+      const foreignName = this.agentInfo?.agentInfo?.name ?? "unknown agent";
+      throw new AcpError(
+        `The spawned agent identifies as "${foreignName}", not ${this.profile.expectedAgentName} — check KIMI_COMPANION_AGENT_SPAWN and PATH.`,
+        { data: { foreignBroker: true, foreignName } }
+      );
+    }
   }
 
   async close() {
@@ -386,6 +397,18 @@ class BrokerAcpClient extends AcpClientBase {
       protocolVersion: this.profile.protocolVersion,
       clientCapabilities: this.profile.clientCapabilities
     });
+
+    // KMP-23: a live socket at the recorded endpoint proves nothing about
+    // WHOSE broker it is — the codex companion records broker state at a
+    // colliding path and its app-server happily answers initialize. Validate
+    // identity fail-closed before any session/* request can die downstream.
+    if (this.profile.isForeignAgentInfo?.(this.agentInfo)) {
+      const foreignName = this.agentInfo?.agentInfo?.name ?? "unknown agent";
+      throw new AcpError(
+        `The broker at this endpoint is serving "${foreignName}", not ${this.profile.expectedAgentName} — foreign broker state (KMP-23).`,
+        { data: { foreignBroker: true, foreignName } }
+      );
+    }
   }
 
   // Permission answers happen broker-side, so the policy must live there
@@ -427,53 +450,102 @@ export class AcpClient {
   // broker's own internal client uses it to prevent recursion.
   static async connect(cwd, options = {}) {
     let brokerEndpoint = null;
-    if (!options.disableBroker) {
-      brokerEndpoint =
-        options.brokerEndpoint ?? options.env?.[BROKER_ENDPOINT_ENV] ?? process.env[BROKER_ENDPOINT_ENV] ?? null;
-      if (!brokerEndpoint && options.reuseExistingBroker) {
-        // Never trust a state record blindly — the broker may have died
-        // without cleaning up. Probe before committing to the endpoint.
-        const existing = loadBrokerSession(cwd)?.endpoint ?? null;
-        if (existing && (await waitForBrokerEndpoint(existing, 150))) {
-          brokerEndpoint = existing;
-        }
-      }
-      if (!brokerEndpoint && options.useBroker) {
-        const brokerSession = await ensureBrokerSession(cwd, { env: options.env, ...(options.brokerOptions ?? {}) });
-        brokerEndpoint = brokerSession?.endpoint ?? null;
-        if (!brokerEndpoint) {
-          throw new AcpError("Failed to start the shared agent broker.");
-        }
-      }
-    }
+    // KMP-23: one heal retry when a REUSED broker turns out to be foreign.
+    let healedForeignBroker = false;
 
-    const client = brokerEndpoint
-      ? new BrokerAcpClient(cwd, { ...options, brokerEndpoint })
-      : new SpawnedAcpClient(cwd, options);
-    try {
-      // connectTimeoutMs bounds the whole handshake; enforced HERE because
-      // only this scope holds the client handle needed to kill a wedged
-      // agent process (a caller-side race would leak it).
-      if (options.connectTimeoutMs) {
-        let timer;
-        await Promise.race([
-          client.initialize(),
-          new Promise((_, reject) => {
-            timer = setTimeout(
-              () => reject(new AcpError(`Agent did not complete the ACP handshake within ${options.connectTimeoutMs / 1000}s.`)),
-              options.connectTimeoutMs
-            );
-            timer.unref?.();
-          })
-        ]).finally(() => clearTimeout(timer));
-      } else {
-        await client.initialize();
+    for (;;) {
+      brokerEndpoint = null;
+      let endpointWasExplicit = false;
+      let brokerWasReused = false;
+      let brokerSession = null;
+
+      if (!options.disableBroker) {
+        brokerEndpoint =
+          options.brokerEndpoint ?? options.env?.[BROKER_ENDPOINT_ENV] ?? process.env[BROKER_ENDPOINT_ENV] ?? null;
+        endpointWasExplicit = Boolean(brokerEndpoint);
+        if (!brokerEndpoint && options.reuseExistingBroker) {
+          // Never trust a state record blindly — the broker may have died
+          // without cleaning up. Probe before committing to the endpoint.
+          const existing = loadBrokerSession(cwd)?.endpoint ?? null;
+          if (existing && (await waitForBrokerEndpoint(existing, 150))) {
+            brokerEndpoint = existing;
+            brokerWasReused = true;
+          }
+        }
+        if (!brokerEndpoint && options.useBroker) {
+          brokerSession = await ensureBrokerSession(cwd, { env: options.env, ...(options.brokerOptions ?? {}) });
+          brokerEndpoint = brokerSession?.endpoint ?? null;
+          brokerWasReused = Boolean(brokerSession?.reused);
+          if (!brokerEndpoint) {
+            throw new AcpError("Failed to start the shared agent broker.");
+          }
+        }
       }
-    } catch (error) {
-      // A failed or timed-out handshake must not orphan the agent process.
-      await client.close().catch(() => {});
-      throw error;
+
+      const client = brokerEndpoint
+        ? new BrokerAcpClient(cwd, { ...options, brokerEndpoint })
+        : new SpawnedAcpClient(cwd, options);
+      try {
+        // connectTimeoutMs bounds the whole handshake; enforced HERE because
+        // only this scope holds the client handle needed to kill a wedged
+        // agent process (a caller-side race would leak it).
+        if (options.connectTimeoutMs) {
+          let timer;
+          await Promise.race([
+            client.initialize(),
+            new Promise((_, reject) => {
+              timer = setTimeout(
+                () => reject(new AcpError(`Agent did not complete the ACP handshake within ${options.connectTimeoutMs / 1000}s.`)),
+                options.connectTimeoutMs
+              );
+              timer.unref?.();
+            })
+          ]).finally(() => clearTimeout(timer));
+        } else {
+          await client.initialize();
+        }
+      } catch (error) {
+        // A failed or timed-out handshake must not orphan the agent process.
+        await client.close().catch(() => {});
+        if (error?.data?.foreignBroker && !endpointWasExplicit) {
+          if (brokerWasReused && !healedForeignBroker) {
+            // Adopted broker belongs to another plugin: discard OUR pointer
+            // to it and retry once with a fresh spawn. Compare-and-delete —
+            // a concurrent healer may have already published a healthy
+            // replacement, which must survive. Never kill the foreign
+            // process — it is not ours to stop.
+            healedForeignBroker = true;
+            const cleared = clearBrokerSessionIfEndpoint(cwd, brokerEndpoint);
+            if (cleared === "contended") {
+              // The pointer may still name the foreign endpoint; retrying
+              // would re-adopt it and burn the single heal for nothing
+              // (Kimi review 2026-07-30). Fail with the actual cause.
+              throw new AcpError(
+                `${error.message} Could not replace the broker pointer (lock contended) — retry the command.`,
+                { data: error.data }
+              );
+            }
+            continue;
+          }
+          if (!brokerWasReused) {
+            // We SPAWNED this broker and its agent still identifies as
+            // foreign: the spawn override or PATH is serving the wrong
+            // binary. Respawning would reproduce it — kill what we spawned
+            // (ours, unlike the reused case) and fail loudly. Conditional
+            // clear for the same concurrent-healer reason.
+            if (brokerSession) {
+              teardownBrokerSession({ ...brokerSession, killProcess: terminateProcessTree });
+            }
+            clearBrokerSessionIfEndpoint(cwd, brokerEndpoint);
+            throw new AcpError(
+              `${error.message} The broker was freshly spawned, so the agent command itself is wrong — check KIMI_COMPANION_AGENT_SPAWN and PATH.`,
+              { data: error.data }
+            );
+          }
+        }
+        throw error;
+      }
+      return client;
     }
-    return client;
   }
 }

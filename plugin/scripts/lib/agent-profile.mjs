@@ -21,6 +21,16 @@ export const kimiProfile = {
   protocolVersion: 1,
   clientCapabilities: { fs: { readTextFile: false, writeTextFile: false } },
 
+  // KMP-23: identity the initialize result must carry (verified live against
+  // kimi 1.49.0: result.agentInfo = { name: "Kimi Code CLI", version }).
+  // Fail-closed — a missing or different name means we are talking to some
+  // OTHER plugin's broker (the codex app-server also answers initialize),
+  // and the next session/* request would die with a protocol error.
+  expectedAgentName: "Kimi Code CLI",
+  isForeignAgentInfo(agentInfo) {
+    return agentInfo?.agentInfo?.name !== this.expectedAgentName;
+  },
+
   // Install probe, consumed via process.mjs binaryAvailable(). runtimeArgs
   // additionally proves the ACP server subcommand exists. The setup command
   // compares against knownGoodVersion and warns on drift (PLAN §7: the ACP
